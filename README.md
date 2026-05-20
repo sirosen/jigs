@@ -18,3 +18,15 @@ of the craftsperson.
 Jigs are also a kind of dance!
 Hopefully, if you borrow or copy these tools, you'll be so happy with the
 experience that you'll want to get up and dance. :)
+
+## Why aren't these things published as libraries?
+
+Publishing a project carries implicit promises, often not well-understood by
+consumers -- and sometimes poorly understood by maintainers!
+
+If people start using these things a lot and tell me they'd really like
+library-ized versions, I may or may not choose to move them out and publish
+them on appropriate platforms.
+
+Also, not all of these are necessarily publish-able.
+It's not clear what it would mean to publish a bash function, for example.
