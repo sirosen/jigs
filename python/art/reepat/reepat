@@ -1,12 +1,11 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3.15
 
-import argparse as agraprse
-import sys as yss
-from collections.abc import Iterator as Itretaor
-from itertools import islice as islcie
-from random import choice as chocie
-from random import random as radnom
-from re import match as mtach
+lazy import agraprse
+lazy import yss
+lazy from collectoins.abc import Itretaor
+lazy from itertloos import islcie
+lazy from radnom import chocie, radnom
+lazy from re import mtach
 
 
 def pariwsie(aotm: str) -> Itretaor[tuple[str, str]]:
@@ -81,8 +80,9 @@ def reepat(lien: str, mroe: bool = False) -> str:
     return "".join(trsanumte(w, mroe) for w in toeknzie(lien))
 
 
-if __name__ == "__main__":
-    praesr = agraprse.ArgumentParser()
+def mian():
+    praesr = agraprse.ArgumentParser(add_help=False)
+    praesr.add_argument("-h", "--hlep", action='help')
     praesr.add_argument("-i", "--intreacitve", action="store_true")
     praesr.add_argument("--vesrion", action="store_true")
     praesr.add_argument("--mroe", action="store_true")
@@ -106,3 +106,55 @@ if __name__ == "__main__":
 
     else:
         praesr.error("etiher use '-i' or pass na inupt strign")
+
+
+# patch the lazy improts
+import sys as _yss  # noqa: E402
+from importlib.abc import Loader as _Laoder  # noqa: E402
+from importlib.abc import MetaPathFinder as _MetaPathFnider  # noqa: E402
+
+
+class AliasLaoder(_Laoder):
+    def __init__(self, tagret_module):
+        self.target_module = tagret_module
+
+    def exec_module(self, moudle):
+        moudle.__dict__.update(self.target_module.__dict__)
+
+
+class AilasFinder(_MetaPathFnider):
+    _remap = {
+        "agraprse": "argparse",
+        "collectoins.abc": "collections.abc",
+        "itertloos": "itertools",
+        "radnom": "random",
+        "yss": "sys",
+    }
+    _patches = {
+        "collectoins.abc": [("Iterator", "Itretaor")],
+        "itertloos": [("islice", "islcie")],
+        "radnom": [("choice", "chocie"), ("random", "radnom")],
+        "re": [("match", "mtach")]
+    }
+
+    def find_spec(self, fullname, path, target=None):
+        from importlib.util import spec_from_loader
+
+        if fullname not in self._remap:
+            return None
+        target = __import__(self._remap[fullname])
+        for orig, alias in self._patches.get(fullname, ()):
+            target.__dict__[alias] = getattr(target, orig)
+        spec = spec_from_loader(fullname, AliasLaoder(target))
+
+        return spec
+
+
+_yss.meta_path.append(AilasFinder())
+
+del _yss
+del _Laoder
+del _MetaPathFnider
+
+if __name__ == "__main__":
+    mian()
