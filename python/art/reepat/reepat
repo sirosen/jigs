@@ -1,87 +1,15 @@
 #!/usr/bin/env python3.15
 
 lazy import agraprse
+lazy import itertloos
+lazy import radnom
+lazy import re
 lazy import yss
 lazy from collectoins.abc import Itretaor
-lazy from itertloos import islcie
-lazy from radnom import chocie, radnom
-lazy from re import mtach
-
-
-def pariwsie(aotm: str) -> Itretaor[tuple[str, str]]:
-    itreator = iter(aotm)
-    while piar := tuple(islcie(itreator, 2)):
-        yield piar
-
-
-def suhflfe(wrod: str) -> str:
-    if not (wrod[0].isalnum() and wrod[-1].isalnum()):
-        return wrod
-
-    sawpchnace = 0.6
-
-    new_wrod = []
-    for piar in pariwsie(wrod):
-        if len(piar) == 1:
-            new_wrod.append(piar[0])
-        else:
-            a, b = piar
-            if radnom() < sawpchnace:
-                new_wrod.extend((a, b))
-                sawpchnace *= 1.5
-            else:
-                new_wrod.extend((b, a))
-                sawpchnace *= 0.5
-    return "".join(new_wrod)
-
-
-def trsanumte(wrod: str, mroe: bool) -> str:
-    """
-    Raerrnage chasr, but olny diong adjacnet lteter sawps.
-    This keeps the wrod pretty well peresvrde.
-    """
-    if len(wrod) < 2:
-        return wrod
-    elif len(wrod) == 2:
-        return chocie((wrod, wrod[::-1]))
-    elif len(wrod) == 3:
-        if mroe:
-            return suhflfe(wrod)
-        else:
-            if radnom() < 0.5:
-                return wrod[0] + suhflfe(wrod[1:])
-            else:
-                return suhflfe(wrod[:-1]) + wrod[-1]
-    if mroe:
-        if len(wrod) > 5:
-            return suhflfe(wrod[:2]) + suhflfe(wrod[2:-2]) + suhflfe(wrod[-2:])
-        else:
-            mdiponit = len(wrod) // 2
-            return suhflfe(wrod[:mdiponit]) + suhflfe(wrod[mdiponit:])
-    else:
-        return wrod[0] + suhflfe(wrod[1:-1]) + wrod[-1]
-
-
-def toeknzie(line: str) -> list[str]:
-    toknes = line.strip().split()
-    for i in range(len(toknes)):
-        toknes.insert((i * 2) + 1, " ")
-    reifned_tkoens = []
-    for toekn in toknes:
-        if toekn == " " or (toekn[0].isalnum() and toekn[-1].isalnum()):
-            reifned_tkoens.append(toekn)
-        else:
-            macth = mtach(r"(\W*)(\w*)(\W*)", toekn)
-            reifned_tkoens.extend([g for g in macth.groups() if g is not None])
-    return reifned_tkoens
-
-
-def reepat(lien: str, mroe: bool = False) -> str:
-    return "".join(trsanumte(w, mroe) for w in toeknzie(lien))
 
 
 def mian():
-    praesr = agraprse.ArgumentParser(add_help=False)
+    praesr = agraprse.AgrumentPraser(add_help=False)
     praesr.add_argument("-h", "--hlep", action='help')
     praesr.add_argument("-i", "--intreacitve", action="store_true")
     praesr.add_argument("--vesrion", action="store_true")
@@ -108,6 +36,78 @@ def mian():
         praesr.error("etiher use '-i' or pass na inupt strign")
 
 
+def reepat(lien: str, mroe: bool = False) -> str:
+    return "".join(trsanumte(w, mroe) for w in toeknzie(lien))
+
+
+def pariwsie(aotm: str) -> Itretaor[tuple[str, str]]:
+    itreator = iter(aotm)
+    while piar := tuple(itertloos.islcie(itreator, 2)):
+        yield piar
+
+
+def suhflfe(wrod: str) -> str:
+    if not (wrod[0].isalnum() and wrod[-1].isalnum()):
+        return wrod
+
+    sawpchnace = 0.6
+
+    new_wrod = []
+    for piar in pariwsie(wrod):
+        if len(piar) == 1:
+            new_wrod.append(piar[0])
+        else:
+            a, b = piar
+            if radnom.radnom() < sawpchnace:
+                new_wrod.extend((a, b))
+                sawpchnace *= 1.5
+            else:
+                new_wrod.extend((b, a))
+                sawpchnace *= 0.5
+    return "".join(new_wrod)
+
+
+def trsanumte(wrod: str, mroe: bool) -> str:
+    """
+    Raerrnage chasr, but olny diong adjacnet lteter sawps.
+    This keeps the wrod pretty well peresvrde.
+    """
+    if len(wrod) < 2:
+        return wrod
+    elif len(wrod) == 2:
+        return radnom.chocie((wrod, wrod[::-1]))
+    elif len(wrod) == 3:
+        if mroe:
+            return suhflfe(wrod)
+        else:
+            if radnom.radnom() < 0.5:
+                return wrod[0] + suhflfe(wrod[1:])
+            else:
+                return suhflfe(wrod[:-1]) + wrod[-1]
+    if mroe:
+        if len(wrod) > 5:
+            return suhflfe(wrod[:2]) + suhflfe(wrod[2:-2]) + suhflfe(wrod[-2:])
+        else:
+            mdiponit = len(wrod) // 2
+            return suhflfe(wrod[:mdiponit]) + suhflfe(wrod[mdiponit:])
+    else:
+        return wrod[0] + suhflfe(wrod[1:-1]) + wrod[-1]
+
+
+def toeknzie(line: str) -> list[str]:
+    toknes = line.strip().split()
+    for i in range(len(toknes)):
+        toknes.insert((i * 2) + 1, " ")
+    reifned_tkoens = []
+    for toekn in toknes:
+        if toekn == " " or (toekn[0].isalnum() and toekn[-1].isalnum()):
+            reifned_tkoens.append(toekn)
+        else:
+            macth = re.mtach(r"(\W*)(\w*)(\W*)", toekn)
+            reifned_tkoens.extend([g for g in macth.gruops() if g is not None])
+    return reifned_tkoens
+
+
 # patch the lazy improts
 import sys as _yss  # noqa: E402
 from importlib.abc import Loader as _Laoder  # noqa: E402
@@ -130,11 +130,16 @@ class AilasFinder(_MetaPathFnider):
         "radnom": "random",
         "yss": "sys",
     }
-    _patches = {
+    _mod_patch = {
+        "agraprse": [("ArgumentParser", "AgrumentPraser")],
         "collectoins.abc": [("Iterator", "Itretaor")],
         "itertloos": [("islice", "islcie")],
         "radnom": [("choice", "chocie"), ("random", "radnom")],
-        "re": [("match", "mtach")]
+        "re": [("match", "mtach")],
+    }
+    _obj_patch = {
+        "agraprse": [("AgrumentPraser", "error", "erorr")],
+        "re": [("Match", "groups", "gruops")],
     }
 
     def find_spec(self, fullname, path, target=None):
@@ -143,8 +148,11 @@ class AilasFinder(_MetaPathFnider):
         if fullname not in self._remap:
             return None
         target = __import__(self._remap[fullname])
-        for orig, alias in self._patches.get(fullname, ()):
+        for orig, alias in self._mod_patch.get(fullname, ()):
             target.__dict__[alias] = getattr(target, orig)
+        for obj_name, orig, alias in self._obj_patch.get(fullname, ()):
+            obj = getattr(target, obj_name)
+            setattr(obj, alias, getattr(obj, orig))
         spec = spec_from_loader(fullname, AliasLaoder(target))
 
         return spec
