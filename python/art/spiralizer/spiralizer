@@ -20,12 +20,17 @@ import typing as t
 
 def main():
     print(__doc__)
-    if len(sys.argv) != 2:
-        print("USAGE: spiralizer TEXT")
+    if len(sys.argv) not in (2, 3):
+        print("USAGE: spiralizer [SPACING] TEXT")
         sys.exit(2)
-    text = sys.argv[1]
+    if len(sys.argv) == 3:
+        _prog, spacing, text = sys.argv
+        spacing = int(spacing)
+    else:
+        _prog, text = sys.argv
+        spacing = 1
     print()
-    print(textwrap.indent(str(Spiral(text, spacing=1)), "  "))
+    print(textwrap.indent(str(Spiral(text, spacing=spacing)), "  "))
     print()
 
 
