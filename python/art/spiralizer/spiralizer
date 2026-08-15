@@ -1,0 +1,127 @@
+#!/usr/bin/env python3.15
+"""
+  S P I R
+        A
+    R   L
+    E Z I
+
+The Most Millenial Command!
+We aren't sure what it's good for, but TV ads have convinced us that we want it!
+
+"""
+from __future__ import annotations
+
+import enum
+import math.integer
+import sys
+import textwrap
+import typing as t
+
+
+def main():
+    print(__doc__)
+    if len(sys.argv) != 2:
+        print("USAGE: spiralizer TEXT")
+        sys.exit(2)
+    text = sys.argv[1]
+    print()
+    print(textwrap.indent(str(Spiral(text, spacing=1)), "  "))
+    print()
+
+
+class Spiral:
+    def __init__(self, text: str, spacing: int = 0) -> None:
+        self._spacing = spacing + 1
+        self._grid = self._make_grid(int(len(text) * (self._spacing)))
+        self._fill(text)
+
+    def _make_grid(self, length: int) -> list[list[Cell]]:
+        side_length = math.integer.isqrt(length)
+        if side_length ** 2 != length:
+            side_length += 1
+
+        grid = [[Cell(" ") for _ in range(side_length)] for _ in range(side_length)]
+
+        return grid
+
+    def _fill(self, text: str) -> None:
+        for char, (row, col) in zip(text, self._iter_indices()):
+            self._grid[row][col].char = char
+
+    def _iter_indices(self) -> t.Iterator[tuple[int, int]]:
+        total_steps = sum(len(row) for row in self._grid)
+
+        top = 1
+        left = 0
+        right = len(self._grid[0])
+        bottom = len(self._grid)
+
+        direction = Direction.right
+
+        row, col = (0, 0)
+        for _ in range(total_steps):
+            yield row, col
+
+            match direction:
+                case Direction.right:
+                    if col + 1 < right:
+                        col += 1
+                        continue
+                    else:
+                        right -= self._spacing
+                        direction = Direction.down
+                        row += 1
+                        continue
+
+                case Direction.down:
+                    if row + 1 < bottom:
+                        row += 1
+                        continue
+                    else:
+                        bottom -= self._spacing
+                        direction = Direction.left
+                        col -= 1
+                        continue
+
+                case Direction.left:
+                    if col - 1 > left:
+                        col -= 1
+                        continue
+                    else:
+                        left += self._spacing
+                        direction = Direction.up
+                        row -= 1
+
+                case Direction.up:
+                    if row - 1 > top:
+                        row -= 1
+                        continue
+                    else:
+                        top += self._spacing
+                        direction = Direction.right
+                        col += 1
+
+    def __str__(self) -> str:
+        return "\n".join(self._gen_str())
+
+    def _gen_str(self) -> t.Iterator[str]:
+        for row in self._grid:
+            yield " ".join(cell.char for cell in row)
+
+
+class Cell:
+    def __init__(self, char: str) -> None:
+        if len(char) != 1:
+            raise ValueError("Cells hold exactly one char")
+        self.char = char
+
+
+class Direction(enum.Enum):
+    right = enum.auto()
+    left = enum.auto()
+    up = enum.auto()
+    down = enum.auto()
+
+
+if __name__ == "__main__":
+    main()
