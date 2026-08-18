@@ -41,13 +41,33 @@ class Spiral:
         self._fill(text)
 
     def _make_grid(self, length: int, spacing: int) -> list[list[Cell]]:
-        side_length = math.integer.isqrt(length * spacing)
-        if side_length ** 2 <= length:
-            side_length += 1
-
+        side_length = self._find_min_side_length(length, spacing)
         grid = [[Cell(" ") for _ in range(side_length)] for _ in range(side_length)]
 
         return grid
+
+    def _find_min_side_length(self, length: int, spacing: int) -> int:
+        side_length = math.integer.isqrt(length)
+        while not self._test_fit(length, spacing, side_length):
+            side_length += 1
+        return side_length
+
+    def _test_fit(self, length: int, spacing: int, side_length: int) -> bool:
+        total = side_length ** 2
+        vertical = horizontal = side_length
+        direction = Direction.right
+        while length > 0 and horizontal > 0 and vertical > 0:
+            if direction in (Direction.right, Direction.left):
+                length -= horizontal
+                total -= horizontal
+                horizontal -= spacing
+                direction = Direction.down
+            else:
+                length -= vertical
+                total -= vertical
+                vertical -= spacing
+                direction = Direction.right
+        return horizontal > 0 and vertical > 0 and total > 0
 
     def _fill(self, text: str) -> None:
         for char, (row, col) in zip(text, self._iter_indices()):
