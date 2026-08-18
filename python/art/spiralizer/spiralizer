@@ -37,12 +37,12 @@ def main():
 class Spiral:
     def __init__(self, text: str, spacing: int = 0) -> None:
         self._spacing = spacing + 1
-        self._grid = self._make_grid(int(len(text) * (self._spacing)))
+        self._grid = self._make_grid(len(text), self._spacing)
         self._fill(text)
 
-    def _make_grid(self, length: int) -> list[list[Cell]]:
-        side_length = math.integer.isqrt(length)
-        if side_length ** 2 != length:
+    def _make_grid(self, length: int, spacing: int) -> list[list[Cell]]:
+        side_length = math.integer.isqrt(length * spacing)
+        if side_length ** 2 <= length:
             side_length += 1
 
         grid = [[Cell(" ") for _ in range(side_length)] for _ in range(side_length)]
