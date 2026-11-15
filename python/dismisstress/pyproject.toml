@@ -1,0 +1,13 @@
+[project]
+name = "dismisstress"
+version = "0.1.0"
+description = "TUI manager for GitHub notifications"
+requires-python = ">=3.10"
+dependencies = ["pygithub>=2.2", "textual"]
+
+[project.scripts]
+dismisstress = "dismisstress:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
