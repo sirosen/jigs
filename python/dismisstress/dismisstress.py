@@ -66,7 +66,6 @@ class Dismisstress(App):
     )
     BINDINGS = (
         ("space", "toggle", "Select"),
-        ("a", "select_all", "Select all"),
         ("m", "merged", "Merged only"),
         ("d", "dismiss", "Dismiss"),
         ("r", "refresh", "Refresh"),
@@ -171,10 +170,6 @@ class Dismisstress(App):
             f"{self.query_one(DataTable).row_count} shown, "
             f"{len(self.selected)} selected"
         )
-
-    def action_select_all(self):
-        self.selected |= {r.value for r in self.query_one(DataTable).rows}
-        self.render_table()
 
     def action_merged(self):
         self.merged_only = not self.merged_only
