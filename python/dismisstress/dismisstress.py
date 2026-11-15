@@ -107,8 +107,8 @@ class Dismisstress(App):
         for id, (n, s, _) in self.rows.items():
             if not self.merged_only or s == "merged":
                 t.add_row(
-                    "*" if id in self.selected else "",
-                    "●" if n.unread else "",
+                    "*" if id in self.selected else " ",
+                    "●" if n.unread else " ",
                     n.repository.full_name,
                     n.subject.type,
                     n.reason,
