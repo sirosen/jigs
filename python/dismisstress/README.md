@@ -4,9 +4,14 @@ TUI manager for GitHub notifications.
 
     uv run dismisstress
 
-Auth: `GITHUB_TOKEN`, else `gh auth token`.
+## Auth
 
-Keys:
+Set `GITHUB_TOKEN` or the app runs `gh auth token` on start.
+
+Security alert counts need a token with the `security_events` scope.
+
+## Keymap
+
 |key        |action                       |
 |-----------|-----------------------------|
 |`space`/`x`|select                       |
@@ -21,4 +26,8 @@ Keys:
 
 Clicking a column header also sorts by it.
 
-Security alert counts need a token with the `security_events` scope.
+## Arguments
+
+`--org ORGNAME,ORGNAME,...` filters the view to specific owners.
+
+    dismisstress --org python,pypa

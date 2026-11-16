@@ -1,4 +1,6 @@
+import argparse
 import contextvars
+import dataclasses
 import enum
 import os
 import subprocess
@@ -21,6 +23,11 @@ class Filter(enum.Flag):
     MERGED = enum.auto()
     SECURITY = enum.auto()
     REPO = enum.auto()
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class CliArgs:
+    owners: tuple[str, ...] | None
 
 
 Row = tuple[Notification, str, str]  # notification, status, url
@@ -94,7 +101,7 @@ def subject(notification: Notification) -> tuple[str, str]:
         return (state, dependabot_uri if is_security else f"https://github.com/{repo}")
     return (
         ("merged" if data.get("merged") else data.get("state", "-")),
-        data.get("html_url", "")
+        data.get("html_url", ""),
     )
 
 
@@ -107,6 +114,10 @@ def latest_comment(notification: Notification) -> str:
         return f"(error: {e.status})"
     user = (comment.get("user") or comment.get("author") or {}).get("login", "?")
     return f"{user}:\n\n{comment.get('body') or ''}"
+
+
+def owner(notification: Notification) -> str:
+    return notification.repository.full_name.split("/")[0].lower()
 
 
 def matches_filter(
@@ -137,8 +148,9 @@ class Dismisstress(App[None]):
         Binding("greater_than_sign", "sort(1)", "Sort next", key_display=">"),
     ]
 
-    def __init__(self) -> None:
+    def __init__(self, args: CliArgs) -> None:
         super().__init__()
+        self.owners = args.owners
         self.rows: dict[str, Row] = {}
         self.comments: dict[str, str] = {}
         self.selected: set[str] = set()
@@ -208,6 +220,8 @@ class Dismisstress(App[None]):
         ns = list(
             PaginatedList(Notification, gh_client().requester, "/notifications", params)
         )
+        if self.owners:
+            ns = [n for n in ns if owner(n) in self.owners]
         # reset on init: threads inherit context on free-threaded builds
         with ThreadPoolExecutor(8, initializer=_clear_context) as ex:
             subjects = list(ex.map(subject, ns))
@@ -295,9 +309,25 @@ class Dismisstress(App[None]):
         self.render_table()
 
 
+def parse_args() -> CliArgs:
+    parser = argparse.ArgumentParser(prog="dismisstress")
+    parser.add_argument(
+        "--owner",
+        "--org",
+        dest="owners",
+        help="only show these owners (comma-separated, or may be used multiple times)",
+        action="append",
+        default=[],
+    )
+    args = parser.parse_args()
+    owners = {o.strip().lower() for x in args.owners for o in x.split(",")}
+    return CliArgs(owners=tuple(owners) if owners else None)
+
+
 def main() -> None:
+    args = parse_args()
     load_token()
-    Dismisstress().run()
+    Dismisstress(args).run()
 
 
 if __name__ == "__main__":
