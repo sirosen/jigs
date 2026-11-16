@@ -61,31 +61,40 @@ def gh_api(verb: str, url: str) -> t.Any:
 
 def subject(notification: Notification) -> tuple[str, str]:
     repo = notification.repository.full_name
-    alerts_link = f"https://github.com/{repo}/security/dependabot"
-    security = notification.reason == "security_alert"
+    is_security = notification.reason == "security_alert"
+    dependabot_uri = f"https://github.com/{repo}/security/dependabot"
+    ghsa_uri = f"https://github.com/{repo}/security/advisories"
+
+    if notification.subject.type == "RepositoryAdvisory":
+        return "-", ghsa_uri
+    if not notification.subject.url and not is_security:
+        return "?", ""
     if not notification.subject.url:
-        if not security:
-            return "-", ""
         try:
             alerts = gh_api(
                 "GET", f"/repos/{repo}/dependabot/alerts?state=open&per_page=100"
             )
         except GithubException:
-            return "?", alerts_link
-        return f"{len(alerts)}{'+' if len(alerts) == 100 else ''} open", alerts_link
+            return "?", dependabot_uri
+        state = f"{len(alerts)}{'+' if len(alerts) == 100 else ''} open"
+        return state, dependabot_uri
+
     try:
         data = gh_api("GET", notification.subject.url)
     except GithubException:
         return "?", ""
+
     if isinstance(data, list):  # grouped subject, e.g. a thread of Dependabot alerts
-        states = sorted({x.get("state", "?") for x in data if isinstance(x, dict)})
-        return (
-            ", ".join(states) or "-",
-            alerts_link if security else f"https://github.com/{repo}",
+        state = (
+            ", ".join(
+                sorted({x.get("state", "?") for x in data if isinstance(x, dict)})
+            )
+            or "-"
         )
+        return (state, dependabot_uri if is_security else f"https://github.com/{repo}")
     return (
         ("merged" if data.get("merged") else data.get("state", "-")),
-        data.get("html_url", ""),
+        data.get("html_url", "")
     )
 
 
