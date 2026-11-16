@@ -11,3 +11,14 @@ dismisstress = "dismisstress:main"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+# used by `hatch check types`
+[tool.hatch.envs.hatch-check-types]
+dependencies = ["mypy"]
+
+[tool.hatch.envs.hatch-check-types.scripts]
+check = "mypy {args}"
+
+[tool.mypy]
+strict = true
+files = ["dismisstress.py"]
