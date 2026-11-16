@@ -1,9 +1,10 @@
 import contextvars
 import os
 import subprocess
+import typing as t
 from concurrent.futures import ThreadPoolExecutor
 
-from github import Auth, Github, GithubException
+from github import Auth, Github, GithubException, Notification
 from rich.text import Text
 from textual import work
 from textual.app import App
@@ -40,12 +41,29 @@ def gh_api(verb, url):
 
 
 def subject(n):
+    repo = n.repository.full_name
+    alerts_link = f"https://github.com/{repo}/security/dependabot"
+    security = n.reason == "security_alert"
     if not n.subject.url:
-        return "-", ""
+        if not security:
+            return "-", ""
+        try:
+            alerts = gh_api(
+                "GET", f"/repos/{repo}/dependabot/alerts?state=open&per_page=100"
+            )
+        except GithubException:
+            return "?", alerts_link
+        return f"{len(alerts)}{'+' if len(alerts) == 100 else ''} open", alerts_link
     try:
         d = gh_api("GET", n.subject.url)
     except GithubException:
         return "?", ""
+    if isinstance(d, list):  # grouped subject, e.g. a thread of Dependabot alerts
+        states = sorted({x.get("state", "?") for x in d if isinstance(x, dict)})
+        return (
+            ", ".join(states) or "-",
+            alerts_link if security else f"https://github.com/{repo}",
+        )
     return ("merged" if d.get("merged") else d.get("state", "-")), d.get("html_url", "")
 
 
@@ -60,13 +78,27 @@ def latest_comment(n):
     return f"{user}:\n\n{c.get('body') or ''}"
 
 
+def matches_filter(
+    filter: t.Literal["merged", "security"] | None, note: Notification, status: str
+) -> bool:
+    if filter is None:
+        return True
+    elif filter == "merged":
+        return status == "merged"
+    elif filter == "security":
+        return note.reason == "security_alert"
+    else:
+        raise NotImplementedError(filter)
+
+
 class Dismisstress(App):
     CSS = (
         "DataTable { height: 2fr; } VerticalScroll { height: 1fr; border: solid gray; }"
     )
     BINDINGS = (
         ("space", "toggle", "Select"),
-        ("m", "merged", "Merged only"),
+        ("m", "filter('merged')", "Merged only"),
+        ("s", "filter('security')", "Security only"),
         ("d", "dismiss", "Dismiss"),
         ("r", "refresh", "Refresh"),
         ("q", "quit", "Quit"),
@@ -79,7 +111,7 @@ class Dismisstress(App):
         self.rows = {}  # id -> (notification, status, url)
         self.comments = {}
         self.selected = set()
-        self.merged_only = False
+        self.filter = None
 
     def compose(self):
         yield Header()
@@ -105,7 +137,7 @@ class Dismisstress(App):
         row = t.cursor_row
         t.clear()
         for id, (n, s, _) in self.rows.items():
-            if not self.merged_only or s == "merged":
+            if matches_filter(self.filter, n, s):
                 t.add_row(
                     "*" if id in self.selected else " ",
                     "●" if n.unread else " ",
@@ -171,8 +203,8 @@ class Dismisstress(App):
             f"{len(self.selected)} selected"
         )
 
-    def action_merged(self):
-        self.merged_only = not self.merged_only
+    def action_filter(self, kind):
+        self.filter = None if self.filter == kind else kind
         self.render_table()
 
     def action_dismiss(self):
