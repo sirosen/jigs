@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from github import Auth, Github, GithubException
 from github.Notification import Notification
+from github.PaginatedList import PaginatedList
 from rich.text import Text
 from textual import work
 from textual.app import App, ComposeResult
@@ -113,7 +114,7 @@ class Dismisstress(App[None]):
         "DataTable { height: 2fr; } VerticalScroll { height: 1fr; border: solid gray; }"
     )
     BINDINGS: t.ClassVar[list[BindingType]] = [
-        ("space", "select", "Select"),
+        ("space,x", "select", "Select"),
         ("m", "filter('MERGED')", "Merged only"),
         ("s", "filter('SECURITY')", "Security only"),
         ("o", "filter('REPO')", "This repo only"),
@@ -173,12 +174,22 @@ class Dismisstress(App[None]):
             table.move_cursor(row=min(row, table.row_count - 1))
         else:
             self.show_detail("", "")
-        self.sub_title = f"{table.row_count} shown, {len(self.selected)} selected"
+        self.update_sub_title()
+
+    def update_sub_title(self) -> None:
+        self.sub_title = (
+            f"{self.query_one(DataTable).row_count} shown, "
+            f"{len(self.selected)} selected"
+        )
 
     @work(thread=True, exclusive=True, group="load")
     def action_refresh(self) -> None:
         self.call_from_thread(setattr, self, "sub_title", "loading...")
-        ns = list(gh_client().get_user().get_notifications(all=True))
+        # PyGithub's get_notifications() lacks is_done; this matches the web inbox
+        params = {"all": "true", "is_done": "false"}
+        ns = list(
+            PaginatedList(Notification, gh_client().requester, "/notifications", params)
+        )
         # reset on init: threads inherit context on free-threaded builds
         with ThreadPoolExecutor(8, initializer=_clear_context) as ex:
             subjects = list(ex.map(subject, ns))
@@ -218,10 +229,7 @@ class Dismisstress(App[None]):
         self.query_one(DataTable).update_cell(
             id, "sel", "*" if id in self.selected else ""
         )
-        self.sub_title = (
-            f"{self.query_one(DataTable).row_count} shown, "
-            f"{len(self.selected)} selected"
-        )
+        self.update_sub_title()
 
     def action_filter(self, name: str) -> None:
         kind = Filter[name]

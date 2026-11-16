@@ -7,15 +7,15 @@ TUI manager for GitHub notifications.
 Auth: `GITHUB_TOKEN`, else `gh auth token`.
 
 Keys:
-|key    |action                       |
-|-------|-----------------------------|
-|`space`|select                       |
-|`m`    |filter:merged-only           |
-|`s`    |filter:security-only         |
-|`o`    |filter:highlighted repo only |
-|`D`    |dismiss selected (or current)|
-|`r`    |refresh                      |
-|`j`/`k`|down/up                      |
-|`q`    |quit                         |
+|key        |action                       |
+|-----------|-----------------------------|
+|`space`/`x`|select                       |
+|`D`        |dismiss selected (or current)|
+|`m`        |filter:merged-only           |
+|`s`        |filter:security-only         |
+|`o`        |filter:highlighted repo only |
+|`r`        |refresh                      |
+|`j`/`k`    |down/up                      |
+|`q`        |quit                         |
 
 Security alert counts need a token with the `security_events` scope.
