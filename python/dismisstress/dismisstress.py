@@ -14,6 +14,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import VerticalScroll
 from textual.widgets import DataTable, Footer, Header, Link, Static
+from textual.widgets.data_table import ColumnKey
 
 
 class Filter(enum.Flag):
@@ -123,6 +124,8 @@ class Dismisstress(App[None]):
         ("q", "quit", "Quit"),
         Binding("j", "simulate_key('down')", "Down"),
         Binding("k", "simulate_key('up')", "Up"),
+        Binding("less_than_sign", "sort(-1)", "Sort prev", key_display="<"),
+        Binding("greater_than_sign", "sort(1)", "Sort next", key_display=">"),
     ]
 
     def __init__(self) -> None:
@@ -132,6 +135,7 @@ class Dismisstress(App[None]):
         self.selected: set[str] = set()
         self.filter = Filter(0)
         self.repo: str | None = None
+        self.sort_by: ColumnKey | None = None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -170,6 +174,8 @@ class Dismisstress(App[None]):
                     notification.subject.title,
                     key=id,
                 )
+        if self.sort_by:
+            table.sort(self.sort_by)
         if table.row_count:
             table.move_cursor(row=min(row, table.row_count - 1))
         else:
@@ -177,10 +183,13 @@ class Dismisstress(App[None]):
         self.update_sub_title()
 
     def update_sub_title(self) -> None:
-        self.sub_title = (
-            f"{self.query_one(DataTable).row_count} shown, "
-            f"{len(self.selected)} selected"
-        )
+        table = self.query_one(DataTable)
+        sort = ""
+        if self.sort_by:
+            sort = (
+                f", sorted by {table.columns[self.sort_by].label.plain or 'Selected'}"
+            )
+        self.sub_title = f"{table.row_count} shown, {len(self.selected)} selected{sort}"
 
     @work(thread=True, exclusive=True, group="load")
     def action_refresh(self) -> None:
@@ -201,6 +210,15 @@ class Dismisstress(App[None]):
         self.rows = rows
         self.comments = {}
         self.selected &= rows.keys()
+        self.render_table()
+
+    def on_data_table_header_selected(self, event: DataTable.HeaderSelected) -> None:
+        self.sort_by = event.column_key
+        self.render_table()
+
+    def action_sort(self, step: int) -> None:
+        cols: list[ColumnKey | None] = [None, *self.query_one(DataTable).columns]
+        self.sort_by = cols[(cols.index(self.sort_by) + step) % len(cols)]
         self.render_table()
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:

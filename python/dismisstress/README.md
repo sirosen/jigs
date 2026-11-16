@@ -16,6 +16,9 @@ Keys:
 |`o`        |filter:highlighted repo only |
 |`r`        |refresh                      |
 |`j`/`k`    |down/up                      |
+|`<`/`>`    |previous/next sort column    |
 |`q`        |quit                         |
+
+Clicking a column header also sorts by it.
 
 Security alert counts need a token with the `security_events` scope.
