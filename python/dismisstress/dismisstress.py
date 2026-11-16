@@ -1,4 +1,5 @@
 import contextvars
+import enum
 import os
 import subprocess
 import typing as t
@@ -13,7 +14,13 @@ from textual.binding import Binding, BindingType
 from textual.containers import VerticalScroll
 from textual.widgets import DataTable, Footer, Header, Link, Static
 
-Filter = t.Literal["merged", "security"]
+
+class Filter(enum.Flag):
+    MERGED = enum.auto()
+    SECURITY = enum.auto()
+    REPO = enum.auto()
+
+
 Row = tuple[Notification, str, str]  # notification, status, url
 
 # token is global (simple)
@@ -92,16 +99,13 @@ def latest_comment(notification: Notification) -> str:
 
 
 def matches_filter(
-    filter: Filter | None, notification: Notification, status: str
+    filter: Filter, notification: Notification, status: str, repo: str | None
 ) -> bool:
-    if filter is None:
-        return True
-    elif filter == "merged":
-        return status == "merged"
-    elif filter == "security":
-        return notification.reason == "security_alert"
-    else:
-        raise NotImplementedError(filter)
+    return (
+        (Filter.MERGED not in filter or status == "merged")
+        and (Filter.SECURITY not in filter or notification.reason == "security_alert")
+        and (Filter.REPO not in filter or notification.repository.full_name == repo)
+    )
 
 
 class Dismisstress(App[None]):
@@ -110,9 +114,10 @@ class Dismisstress(App[None]):
     )
     BINDINGS: t.ClassVar[list[BindingType]] = [
         ("space", "select", "Select"),
-        ("m", "filter('merged')", "Merged only"),
-        ("s", "filter('security')", "Security only"),
-        ("d", "dismiss", "Dismiss"),
+        ("m", "filter('MERGED')", "Merged only"),
+        ("s", "filter('SECURITY')", "Security only"),
+        ("o", "filter('REPO')", "This repo only"),
+        ("D", "dismiss", "Dismiss"),
         ("r", "refresh", "Refresh"),
         ("q", "quit", "Quit"),
         Binding("j", "simulate_key('down')", "Down"),
@@ -124,7 +129,8 @@ class Dismisstress(App[None]):
         self.rows: dict[str, Row] = {}
         self.comments: dict[str, str] = {}
         self.selected: set[str] = set()
-        self.filter: Filter | None = None
+        self.filter = Filter(0)
+        self.repo: str | None = None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -132,6 +138,7 @@ class Dismisstress(App[None]):
         with VerticalScroll():
             yield Link("", id="link")
             yield Static(id="detail")
+        yield Static(id="status")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -151,7 +158,7 @@ class Dismisstress(App[None]):
         row = table.cursor_row
         table.clear()
         for id, (notification, status, _) in self.rows.items():
-            if matches_filter(self.filter, notification, status):
+            if matches_filter(self.filter, notification, status, self.repo):
                 table.add_row(
                     "*" if id in self.selected else " ",
                     "●" if notification.unread else " ",
@@ -216,8 +223,11 @@ class Dismisstress(App[None]):
             f"{len(self.selected)} selected"
         )
 
-    def action_filter(self, kind: Filter) -> None:
-        self.filter = None if self.filter == kind else kind
+    def action_filter(self, name: str) -> None:
+        kind = Filter[name]
+        self.filter ^= kind
+        if kind is Filter.REPO and kind in self.filter and (id := self.current()):
+            self.repo = self.rows[id][0].repository.full_name
         self.render_table()
 
     def action_dismiss(self) -> None:
@@ -228,7 +238,8 @@ class Dismisstress(App[None]):
     @work(thread=True, group="dismiss")
     def dismiss(self, ids: set[str]) -> None:
         done = set()
-        for id in ids:
+        for i, id in enumerate(ids, 1):
+            self.call_from_thread(self.set_status, f"dismissing {i}/{len(ids)}...")
             try:
                 gh_api("DELETE", self.rows[id][0].url)
                 done.add(id)
@@ -236,7 +247,11 @@ class Dismisstress(App[None]):
                 self.call_from_thread(
                     self.notify, f"dismiss failed: {e.status}", severity="error"
                 )
+        self.call_from_thread(self.set_status, f"dismissed {len(done)}/{len(ids)}")
         self.call_from_thread(self.dismissed, done)
+
+    def set_status(self, text: str) -> None:
+        self.query_one("#status", Static).update(text)
 
     def dismissed(self, ids: set[str]) -> None:
         for id in ids:
