@@ -19,7 +19,13 @@ Row = tuple[Notification, str, str]  # notification, status, url
 # token is global (simple)
 _GH_TOKEN: str = ""
 # PyGithub clients are not thread-safe, so each thread gets its own
-_gh_client_var: contextvars.ContextVar[Github] = contextvars.ContextVar("gh_client")
+_gh_client_var: contextvars.ContextVar[Github | None] = contextvars.ContextVar(
+    "gh_client"
+)
+
+
+def _clear_context() -> None:
+    _gh_client_var.set(None)
 
 
 def load_token() -> None:
@@ -166,7 +172,8 @@ class Dismisstress(App[None]):
     def action_refresh(self) -> None:
         self.call_from_thread(setattr, self, "sub_title", "loading...")
         ns = list(gh_client().get_user().get_notifications(all=True))
-        with ThreadPoolExecutor(8) as ex:
+        # reset on init: threads inherit context on free-threaded builds
+        with ThreadPoolExecutor(8, initializer=_clear_context) as ex:
             subjects = list(ex.map(subject, ns))
         self.call_from_thread(
             self.loaded, {n.id: (n, *s) for n, s in zip(ns, subjects)}
