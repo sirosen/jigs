@@ -2,6 +2,7 @@ import argparse
 import contextvars
 import dataclasses
 import enum
+import math
 import os
 import subprocess
 import typing as t
@@ -10,6 +11,8 @@ from concurrent.futures import ThreadPoolExecutor
 from github import Auth, Github, GithubException
 from github.Notification import Notification
 from github.PaginatedList import PaginatedList
+from rich.console import Group, RenderableType
+from rich.padding import Padding
 from rich.text import Text
 from textual import work
 from textual.app import App, ComposeResult
@@ -116,6 +119,60 @@ def latest_comment(notification: Notification) -> str:
     return f"{user}:\n\n{comment.get('body') or ''}"
 
 
+def renderable_comment_thread(notification: Notification) -> RenderableType:
+    """Opening post plus the newest 100 main-thread comments, oldest first."""
+    if notification.subject.type not in ("Issue", "PullRequest"):
+        return Text(latest_comment(notification))
+
+    try:
+        subject_info = gh_api("GET", notification.subject.url)
+    except GithubException as e:
+        return Text(f"(error on notification metadata lookup: {e.status})")
+
+    num_comments = subject_info.get("comments", 0)
+    last_page_index = math.ceil(num_comments / 100)
+    comments: list[dict[str, t.Any]] = []
+
+    # get the last two pages of comments, then trim down to 100
+    # most typically, there are fewer than 100 comments, so this is *usually* one call
+    try:
+        if last_page_index > 0:
+            comments.extend(
+                _fetch_page_comments(
+                    last_page_index - 1, subject_info["comments_url"]
+                )
+            )
+        comments.extend(
+            _fetch_page_comments(last_page_index, subject_info["comments_url"])
+        )
+    except GithubException as e:
+        return Text(f"(error fetching comments: {e.status})")
+    comments = comments[-100:]
+
+    # start with the initial comment and optionally a spacer for hidden old comments
+    parts: list[RenderableType] = _format_comment(subject_info)
+    if (hidden := num_comments - len(comments)) > 0:
+        parts.append(Text(f"...{hidden} older comments not shown...\n", "dim"))
+
+    for comment in comments:
+        parts.extend(_format_comment(comment))
+
+    return Group(*parts)
+
+
+def _format_comment(post: dict[str, t.Any]) -> list[RenderableType]:
+    parts = []
+    user = (post.get("user") or {}).get("login", "ghost")
+    parts.append(Text(f"── {user} · {post.get('created_at', '')[:10]}", "bold"))
+    parts.append(Padding(Text(post.get("body") or ""), (0, 0, 1, 2)))
+    return parts
+
+
+def _fetch_page_comments(page_index: int, comments_url: str) -> list[dict[str, t.Any]]:
+    url = f"{comments_url}?per_page=100&page={page_index}"
+    return gh_api("GET", url)
+
+
 def owner(notification: Notification) -> str:
     return notification.repository.full_name.split("/")[0].lower()
 
@@ -152,7 +209,7 @@ class Dismisstress(App[None]):
         super().__init__()
         self.owners = args.owners
         self.rows: dict[str, Row] = {}
-        self.comments: dict[str, str] = {}
+        self.comments: dict[str, RenderableType] = {}
         self.selected: set[str] = set()
         self.filter = Filter(0)
         self.repo: str | None = None
@@ -161,8 +218,8 @@ class Dismisstress(App[None]):
     def compose(self) -> ComposeResult:
         yield Header()
         yield DataTable(cursor_type="row")
+        yield Link("", id="link")
         with VerticalScroll():
-            yield Link("", id="link")
             yield Static(id="detail")
         yield Static(id="status")
         yield Footer()
@@ -252,16 +309,20 @@ class Dismisstress(App[None]):
     def show(self, id: str) -> None:
         n, s, url = self.rows[id]
         if id not in self.comments:
-            self.comments[id] = latest_comment(n)
-        text = Text(f"{n.subject.title}\n{n.subject.type}: {s}\n\n", style="bold")
-        text.append(self.comments[id])
+            self.comments[id] = renderable_comment_thread(n)
+        header = Text(f"{n.subject.title}\n{n.subject.type}: {s}\n", "bold")
         if self.current() == id:
-            self.call_from_thread(self.show_detail, url, text)
+            self.call_from_thread(
+                self.show_detail, url, Group(header, self.comments[id])
+            )
 
-    def show_detail(self, url: str, text: str | Text) -> None:
+    def show_detail(self, url: str, text: RenderableType) -> None:
         link = self.query_one(Link)
         link.text = link.url = url
         self.query_one("#detail", Static).update(text)
+        self.call_after_refresh(
+            self.query_one(VerticalScroll).scroll_end, animate=False
+        )
 
     def action_select(self) -> None:
         if (id := self.current()) is None:
