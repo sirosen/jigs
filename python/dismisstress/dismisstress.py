@@ -161,7 +161,7 @@ def renderable_comment_thread(notification: Notification) -> RenderableType:
 
 
 def _format_comment(post: dict[str, t.Any]) -> list[RenderableType]:
-    parts = []
+    parts: list[RenderableType] = []
     user = (post.get("user") or {}).get("login", "ghost")
     parts.append(Text(f"── {user} · {post.get('created_at', '')[:10]}", "bold"))
     parts.append(Padding(Text(post.get("body") or ""), (0, 0, 1, 2)))
@@ -170,7 +170,7 @@ def _format_comment(post: dict[str, t.Any]) -> list[RenderableType]:
 
 def _fetch_page_comments(page_index: int, comments_url: str) -> list[dict[str, t.Any]]:
     url = f"{comments_url}?per_page=100&page={page_index}"
-    return gh_api("GET", url)
+    return gh_api("GET", url)  # type: ignore[no-any-return]
 
 
 def owner(notification: Notification) -> str:

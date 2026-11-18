@@ -1,0 +1,9 @@
+default:
+    @just --list
+
+verify:
+    hatch run mypy:main
+    hatch run check-sdist:main
+
+publish:
+    hatch publish

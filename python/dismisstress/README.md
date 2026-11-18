@@ -4,6 +4,12 @@ TUI manager for GitHub notifications.
 
     uv run dismisstress
 
+> [!CAUTION]
+> `dismisstress` is published, but is part of
+> [@sirosen's jigs](https://github.com/sirosen/jigs).
+>
+> It is made uniquely for one person's needs, and may or may not suit you.
+
 ## Auth
 
 Set `GITHUB_TOKEN` or the app runs `gh auth token` on start.
