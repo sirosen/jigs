@@ -279,8 +279,10 @@ class Dismisstress(App[None]):
         )
         if self.owners:
             ns = [n for n in ns if owner(n) in self.owners]
+
+        num_threads = max(len(ns), 16)
         # reset on init: threads inherit context on free-threaded builds
-        with ThreadPoolExecutor(8, initializer=_clear_context) as ex:
+        with ThreadPoolExecutor(num_threads, initializer=_clear_context) as ex:
             subjects = list(ex.map(subject, ns))
         self.call_from_thread(
             self.loaded, {n.id: (n, *s) for n, s in zip(ns, subjects)}
