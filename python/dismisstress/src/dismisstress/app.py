@@ -1,16 +1,10 @@
-import argparse
-import contextvars
-import dataclasses
-import enum
+import functools
 import math
-import os
-import subprocess
+import time
 import typing as t
 from concurrent.futures import ThreadPoolExecutor
 
-from github import Auth, Github, GithubException
-from github.Notification import Notification
-from github.PaginatedList import PaginatedList
+import requests
 from rich.console import Group, RenderableType
 from rich.padding import Padding
 from rich.text import Text
@@ -21,78 +15,38 @@ from textual.containers import VerticalScroll
 from textual.widgets import DataTable, Footer, Header, Link, Static
 from textual.widgets.data_table import ColumnKey
 
-
-class Filter(enum.Flag):
-    MERGED = enum.auto()
-    SECURITY = enum.auto()
-    REPO = enum.auto()
+from .data_models import CliArgs, Filter, GHNotification, Row
+from .gh_client import GithubClient
 
 
-@dataclasses.dataclass(frozen=True, slots=True)
-class CliArgs:
-    owners: tuple[str, ...] | None
+def render_request_error(e: requests.RequestException) -> str:
+    return str(e.response.status_code) if e.response is not None else type(e).__name__
 
 
-Row = tuple[Notification, str, str]  # notification, status, url
-
-# token is global (simple)
-_GH_TOKEN: str = ""
-# PyGithub clients are not thread-safe, so each thread gets its own
-_gh_client_var: contextvars.ContextVar[Github | None] = contextvars.ContextVar(
-    "gh_client"
-)
-
-
-def _clear_context() -> None:
-    _gh_client_var.set(None)
-
-
-def load_token() -> None:
-    global _GH_TOKEN
-    _GH_TOKEN = (
-        os.environ.get("GITHUB_TOKEN")
-        or subprocess.run(
-            ["gh", "auth", "token"], capture_output=True, text=True, check=True
-        ).stdout.strip()
-    )
-
-
-def gh_client() -> Github:
-    ret: Github | None = _gh_client_var.get(None)
-    if ret is None:
-        ret = Github(auth=Auth.Token(_GH_TOKEN))
-        _gh_client_var.set(ret)
-    return ret
-
-
-def gh_api(verb: str, url: str) -> t.Any:
-    return gh_client().requester.requestJsonAndCheck(verb, url)[1]
-
-
-def subject(notification: Notification) -> tuple[str, str]:
-    repo = notification.repository.full_name
-    is_security = notification.reason == "security_alert"
+def notification2row(gh: GithubClient, notification: GHNotification) -> Row:
+    repo = notification.repo
+    url = notification.subject.url
     dependabot_uri = f"https://github.com/{repo}/security/dependabot"
     ghsa_uri = f"https://github.com/{repo}/security/advisories"
 
     if notification.subject.type == "RepositoryAdvisory":
-        return "-", ghsa_uri
-    if not notification.subject.url and not is_security:
-        return "?", ""
-    if not notification.subject.url:
+        return Row(notification, "-", ghsa_uri)
+    if not url and not notification.is_security_alert:
+        return Row(notification, "?", "")
+    if not url:
         try:
-            alerts = gh_api(
-                "GET", f"/repos/{repo}/dependabot/alerts?state=open&per_page=100"
+            alerts = gh.get(
+                f"/repos/{repo}/dependabot/alerts", state="open", per_page=100
             )
-        except GithubException:
-            return "?", dependabot_uri
+        except requests.RequestException:
+            return Row(notification, "?", dependabot_uri)
         state = f"{len(alerts)}{'+' if len(alerts) == 100 else ''} open"
-        return state, dependabot_uri
+        return Row(notification, state, dependabot_uri)
 
     try:
-        data = gh_api("GET", notification.subject.url)
-    except GithubException:
-        return "?", ""
+        data = gh.get(url)
+    except requests.RequestException:
+        return Row(notification, "?", "")
 
     if isinstance(data, list):  # grouped subject, e.g. a thread of Dependabot alerts
         state = (
@@ -101,33 +55,45 @@ def subject(notification: Notification) -> tuple[str, str]:
             )
             or "-"
         )
-        return (state, dependabot_uri if is_security else f"https://github.com/{repo}")
-    return (
+        return Row(
+            notification,
+            state,
+            dependabot_uri
+            if notification.is_security_alert
+            else f"https://github.com/{repo}",
+        )
+    return Row(
+        notification,
         ("merged" if data.get("merged") else data.get("state", "-")),
         data.get("html_url", ""),
     )
 
 
-def latest_comment(notification: Notification) -> str:
-    if not notification.subject.latest_comment_url:
+def latest_comment(gh: GithubClient, notification: GHNotification) -> str:
+    if not (url := notification.subject.latest_comment_url):
         return "(no comments)"
     try:
-        comment = gh_api("GET", notification.subject.latest_comment_url)
-    except GithubException as e:
-        return f"(error: {e.status})"
+        comment = gh.get(url)
+    except requests.RequestException as e:
+        return f"(error: {render_request_error(e)})"
     user = (comment.get("user") or comment.get("author") or {}).get("login", "?")
     return f"{user}:\n\n{comment.get('body') or ''}"
 
 
-def renderable_comment_thread(notification: Notification) -> RenderableType:
+def renderable_comment_thread(
+    gh: GithubClient, notification: GHNotification
+) -> RenderableType:
     """Opening post plus the newest 100 main-thread comments, oldest first."""
-    if notification.subject.type not in ("Issue", "PullRequest"):
-        return Text(latest_comment(notification))
+    url = notification.subject.url
+    if notification.subject.type not in ("Issue", "PullRequest") or not url:
+        return Text(latest_comment(gh, notification))
 
     try:
-        subject_info = gh_api("GET", notification.subject.url)
-    except GithubException as e:
-        return Text(f"(error on notification metadata lookup: {e.status})")
+        subject_info = gh.get(url)
+    except requests.RequestException as e:
+        return Text(
+            f"(error on notification metadata lookup: {render_request_error(e)})"
+        )
 
     num_comments = subject_info.get("comments", 0)
     last_page_index = math.ceil(num_comments / 100)
@@ -136,17 +102,13 @@ def renderable_comment_thread(notification: Notification) -> RenderableType:
     # get the last two pages of comments, then trim down to 100
     # most typically, there are fewer than 100 comments, so this is *usually* one call
     try:
-        if last_page_index > 0:
-            comments.extend(
-                _fetch_page_comments(
-                    last_page_index - 1, subject_info["comments_url"]
+        for page in (last_page_index - 1, last_page_index):
+            if page > 0:
+                comments += gh.get(
+                    subject_info["comments_url"], per_page=100, page=page
                 )
-            )
-        comments.extend(
-            _fetch_page_comments(last_page_index, subject_info["comments_url"])
-        )
-    except GithubException as e:
-        return Text(f"(error fetching comments: {e.status})")
+    except requests.RequestException as e:
+        return Text(f"(error fetching comments: {render_request_error(e)})")
     comments = comments[-100:]
 
     # start with the initial comment and optionally a spacer for hidden old comments
@@ -168,22 +130,15 @@ def _format_comment(post: dict[str, t.Any]) -> list[RenderableType]:
     return parts
 
 
-def _fetch_page_comments(page_index: int, comments_url: str) -> list[dict[str, t.Any]]:
-    url = f"{comments_url}?per_page=100&page={page_index}"
-    return gh_api("GET", url)  # type: ignore[no-any-return]
+def owner(notification: GHNotification) -> str:
+    return notification.repo.split("/")[0].lower()
 
 
-def owner(notification: Notification) -> str:
-    return notification.repository.full_name.split("/")[0].lower()
-
-
-def matches_filter(
-    filter: Filter, notification: Notification, status: str, repo: str | None
-) -> bool:
+def matches_filter(filter: Filter, row: Row, repo: str | None) -> bool:
     return (
-        (Filter.MERGED not in filter or status == "merged")
-        and (Filter.SECURITY not in filter or notification.reason == "security_alert")
-        and (Filter.REPO not in filter or notification.repository.full_name == repo)
+        (Filter.MERGED not in filter or row.status == "merged")
+        and (Filter.SECURITY not in filter or row.is_security_alert)
+        and (Filter.REPO not in filter or row.notification.repo == repo)
     )
 
 
@@ -205,8 +160,9 @@ class Dismisstress(App[None]):
         Binding("greater_than_sign", "sort(1)", "Sort next", key_display=">"),
     ]
 
-    def __init__(self, args: CliArgs) -> None:
+    def __init__(self, args: CliArgs, client: GithubClient) -> None:
         super().__init__()
+        self.client = client
         self.owners = args.owners
         self.rows: dict[str, Row] = {}
         self.comments: dict[str, RenderableType] = {}
@@ -238,24 +194,24 @@ class Dismisstress(App[None]):
 
     def render_table(self) -> None:
         table = self.query_one(DataTable)
-        row = table.cursor_row
+        cursor_row = table.cursor_row
         table.clear()
-        for id, (notification, status, _) in self.rows.items():
-            if matches_filter(self.filter, notification, status, self.repo):
+        for row in self.rows.values():
+            if matches_filter(self.filter, row, self.repo):
                 table.add_row(
-                    "*" if id in self.selected else " ",
-                    "●" if notification.unread else " ",
-                    notification.repository.full_name,
-                    notification.subject.type,
-                    notification.reason,
-                    status,
-                    notification.subject.title,
-                    key=id,
+                    "*" if row.notification.id in self.selected else " ",
+                    "●" if row.notification.unread else " ",
+                    row.notification.repo,
+                    row.notification.subject.type,
+                    row.notification.reason,
+                    row.status,
+                    row.notification.subject.title,
+                    key=row.notification.id,
                 )
         if self.sort_by:
             table.sort(self.sort_by)
         if table.row_count:
-            table.move_cursor(row=min(row, table.row_count - 1))
+            table.move_cursor(row=min(cursor_row, table.row_count - 1))
         else:
             self.show_detail("", "")
         self.update_sub_title()
@@ -272,21 +228,17 @@ class Dismisstress(App[None]):
     @work(thread=True, exclusive=True, group="load")
     def action_refresh(self) -> None:
         self.call_from_thread(setattr, self, "sub_title", "loading...")
-        # PyGithub's get_notifications() lacks is_done; this matches the web inbox
-        params = {"all": "true", "is_done": "false"}
-        ns = list(
-            PaginatedList(Notification, gh_client().requester, "/notifications", params)
-        )
+        notifications = self.client.list_notifications()
         if self.owners:
-            ns = [n for n in ns if owner(n) in self.owners]
-
-        num_threads = max(len(ns), 16)
-        # reset on init: threads inherit context on free-threaded builds
-        with ThreadPoolExecutor(num_threads, initializer=_clear_context) as ex:
-            subjects = list(ex.map(subject, ns))
-        self.call_from_thread(
-            self.loaded, {n.id: (n, *s) for n, s in zip(ns, subjects)}
-        )
+            notifications = [n for n in notifications if owner(n) in self.owners]
+        with ThreadPoolExecutor(min(16, len(notifications) // 2) or 1) as ex:
+            rows = list(
+                ex.map(
+                    functools.partial(notification2row, self.client),
+                    notifications,
+                )
+            )
+        self.call_from_thread(self.loaded, {row.notification.id: row for row in rows})
 
     def loaded(self, rows: dict[str, Row]) -> None:
         self.rows = rows
@@ -309,13 +261,19 @@ class Dismisstress(App[None]):
 
     @work(thread=True, exclusive=True, group="detail")
     def show(self, id: str) -> None:
-        n, s, url = self.rows[id]
+        row = self.rows[id]
         if id not in self.comments:
-            self.comments[id] = renderable_comment_thread(n)
-        header = Text(f"{n.subject.title}\n{n.subject.type}: {s}\n", "bold")
+            self.comments[id] = renderable_comment_thread(self.client, row.notification)
+        header = Text(
+            (
+                f"{row.notification.subject.title}\n"
+                f"{row.notification.subject.type}: {row.status}\n"
+            ),
+            "bold",
+        )
         if self.current() == id:
             self.call_from_thread(
-                self.show_detail, url, Group(header, self.comments[id])
+                self.show_detail, row.url, Group(header, self.comments[id])
             )
 
     def show_detail(self, url: str, text: RenderableType) -> None:
@@ -339,7 +297,7 @@ class Dismisstress(App[None]):
         kind = Filter[name]
         self.filter ^= kind
         if kind is Filter.REPO and kind in self.filter and (id := self.current()):
-            self.repo = self.rows[id][0].repository.full_name
+            self.repo = self.rows[id].notification.repo
         self.render_table()
 
     def action_dismiss(self) -> None:
@@ -352,12 +310,16 @@ class Dismisstress(App[None]):
         done = set()
         for i, id in enumerate(ids, 1):
             self.call_from_thread(self.set_status, f"dismissing {i}/{len(ids)}...")
+            if i > 1:
+                time.sleep(1)  # GitHub asks for >=1s between mutating requests
             try:
-                gh_api("DELETE", self.rows[id][0].url)
+                self.client.clear_notification(self.rows[id].notification)
                 done.add(id)
-            except GithubException as e:
+            except requests.RequestException as e:
                 self.call_from_thread(
-                    self.notify, f"dismiss failed: {e.status}", severity="error"
+                    self.notify,
+                    f"dismiss failed: {render_request_error(e)}",
+                    severity="error",
                 )
         self.call_from_thread(self.set_status, f"dismissed {len(done)}/{len(ids)}")
         self.call_from_thread(self.dismissed, done)
@@ -370,28 +332,3 @@ class Dismisstress(App[None]):
             self.rows.pop(id, None)
         self.selected -= ids
         self.render_table()
-
-
-def parse_args() -> CliArgs:
-    parser = argparse.ArgumentParser(prog="dismisstress")
-    parser.add_argument(
-        "--owner",
-        "--org",
-        dest="owners",
-        help="only show these owners (comma-separated, or may be used multiple times)",
-        action="append",
-        default=[],
-    )
-    args = parser.parse_args()
-    owners = {o.strip().lower() for x in args.owners for o in x.split(",")}
-    return CliArgs(owners=tuple(owners) if owners else None)
-
-
-def main() -> None:
-    args = parse_args()
-    load_token()
-    Dismisstress(args).run()
-
-
-if __name__ == "__main__":
-    main()
