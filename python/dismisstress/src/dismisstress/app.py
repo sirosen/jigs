@@ -13,12 +13,15 @@ from textual.containers import VerticalScroll
 from textual.widgets import DataTable, Footer, Header, Link, Static
 from textual.widgets.data_table import ColumnKey
 
-from .data_models import CliArgs, Filter, GHNotification, Row
+from .data_models import (
+    CliArgs,
+    Comment,
+    Filter,
+    GHNotification,
+    Row,
+    ThreadStartComment,
+)
 from .gh_client import GithubClient
-
-
-def render_http_error(e: aiohttp.ClientResponseError) -> str:
-    return str(e.response.status_code) if e.response is not None else type(e).__name__
 
 
 async def notification2row(gh: GithubClient, notification: GHNotification) -> Row:
@@ -33,11 +36,7 @@ async def notification2row(gh: GithubClient, notification: GHNotification) -> Ro
         return Row(notification, "?", "")
     if not url:
         try:
-            alerts = (
-                await gh.get(
-                    f"/repos/{repo}/dependabot/alerts", state="open", per_page=100
-                )
-            ).json_body
+            alerts = (await gh.get_dependabot_alerts(repo)).json_body
         except aiohttp.ClientResponseError:
             return Row(notification, "?", dependabot_uri)
         state = f"{len(alerts)}{'+' if len(alerts) == 100 else ''} open"
@@ -75,7 +74,7 @@ async def latest_comment(gh: GithubClient, notification: GHNotification) -> str:
     try:
         comment = (await gh.get(url)).json_body
     except aiohttp.ClientResponseError as e:
-        return f"(error: {render_http_error(e)})"
+        return f"(error: {e})"
     user = (comment.get("user") or comment.get("author") or {}).get("login", "?")
     return f"{user}:\n\n{comment.get('body') or ''}"
 
@@ -85,35 +84,26 @@ async def renderable_comment_thread(
 ) -> RenderableType:
     """Opening post plus the newest 100 main-thread comments, oldest first."""
     url = notification.subject.url
-    if notification.subject.type not in ("Issue", "PullRequest") or not url:
+    if not url:
+        return Text("(no comments)")
+    if notification.subject.type == "Discussion":
+        return Text("(... TODO: no support yet for discussion threads ...)")
+    elif notification.subject.type not in ("Issue", "PullRequest"):
         return Text(await latest_comment(gh, notification))
 
     try:
-        subject_info = (await gh.get(url)).json_body
+        start_comment = ThreadStartComment.from_json((await gh.get(url)).json_body)
     except aiohttp.ClientResponseError as e:
-        return Text(
-            f"(error on notification metadata lookup: {render_http_error(e)})"
-        )
+        return Text(f"(error on notification metadata lookup: {e})")
 
-    num_comments = subject_info.get("comments", 0)
-    last_page_index = math.ceil(num_comments / 100)
-    comments: list[dict[str, t.Any]] = []
-
-    # get the last two pages of comments, then trim down to 100
-    # most typically, there are fewer than 100 comments, so this is *usually* one call
     try:
-        for page in (last_page_index - 1, last_page_index):
-            if page > 0:
-                comments += (
-                    await gh.get(subject_info["comments_url"], per_page=100, page=page)
-                ).json_body
+        comments = await _last_100_comments(gh, start_comment)
     except aiohttp.ClientResponseError as e:
-        return Text(f"(error fetching comments: {render_http_error(e)})")
-    comments = comments[-100:]
+        return Text(f"(error fetching comments: {e})")
 
     # start with the initial comment and optionally a spacer for hidden old comments
-    parts: list[RenderableType] = _format_comment(subject_info)
-    if (hidden := num_comments - len(comments)) > 0:
+    parts: list[RenderableType] = _format_comment(start_comment)
+    if (hidden := (start_comment.num_comments - len(comments))) > 0:
         parts.append(Text(f"...{hidden} older comments not shown...\n", "dim"))
 
     for comment in comments:
@@ -122,24 +112,33 @@ async def renderable_comment_thread(
     return Group(*parts)
 
 
-def _format_comment(post: dict[str, t.Any]) -> list[RenderableType]:
-    parts: list[RenderableType] = []
-    user = (post.get("user") or {}).get("login", "ghost")
-    parts.append(Text(f"── {user} · {post.get('created_at', '')[:10]}", "bold"))
-    parts.append(Padding(Text(post.get("body") or ""), (0, 0, 1, 2)))
-    return parts
+async def _last_100_comments(
+    gh: GithubClient, start_comment: ThreadStartComment
+) -> list[Comment]:
+    comments: list[Comment] = []
+    last_page_index = math.ceil(start_comment.num_comments / 100)
+
+    # get the last two pages of comments, then trim down to 100
+    # most typically, there are fewer than 100 comments, so this is *usually* one call
+    for page in (last_page_index - 1, last_page_index):
+        if page > 0:
+            comments.extend(
+                Comment.from_json(c)
+                for c in (
+                    await gh.get(
+                        start_comment.comments_url, per_page=100, page=page
+                    )
+                ).json_body
+            )
+
+    return comments[-100:]
 
 
-def owner(notification: GHNotification) -> str:
-    return notification.repo.split("/")[0].lower()
-
-
-def matches_filter(filter: Filter, row: Row, repo: str | None) -> bool:
-    return (
-        (Filter.MERGED not in filter or row.status == "merged")
-        and (Filter.SECURITY not in filter or row.is_security_alert)
-        and (Filter.REPO not in filter or row.notification.repo == repo)
-    )
+def _format_comment(post: Comment) -> list[RenderableType]:
+    return [
+        Text(f"── {post.user} · {post.created_at}", "bold"),
+        Padding(Text(post.body or ""), (0, 0, 1, 2)),
+    ]
 
 
 class Dismisstress(App[None]):
@@ -197,7 +196,7 @@ class Dismisstress(App[None]):
         cursor_row = table.cursor_row
         table.clear()
         for row in self.rows.values():
-            if matches_filter(self.filter, row, self.repo):
+            if row.matches_filter(self.filter, self.repo):
                 table.add_row(
                     "*" if row.notification.id in self.selected else " ",
                     "●" if row.notification.unread else " ",
@@ -230,7 +229,7 @@ class Dismisstress(App[None]):
         self.sub_title = "loading..."
         notifications = await self.client.list_notifications()
         if self.owners:
-            notifications = [n for n in notifications if owner(n) in self.owners]
+            notifications = [n for n in notifications if n.owner in self.owners]
         rows = await asyncio.gather(
             *(notification2row(self.client, n) for n in notifications)
         )
@@ -283,7 +282,7 @@ class Dismisstress(App[None]):
             return
         self.selected ^= {id}
         self.query_one(DataTable).update_cell(
-            id, "sel", "*" if id in self.selected else ""
+            id, "sel", "*" if id in self.selected else " "
         )
         self.update_sub_title()
 
@@ -310,9 +309,7 @@ class Dismisstress(App[None]):
                 await self.client.clear_notification(self.rows[id].notification)
                 done.add(id)
             except aiohttp.ClientResponseError as e:
-                self.notify(
-                    f"dismiss failed: {render_http_error(e)}", severity="error"
-                )
+                self.notify(f"dismiss failed: {e}", severity="error")
         self.set_status(f"dismissed {len(done)}/{len(ids)}")
         self.mark_dismissed(done)
 

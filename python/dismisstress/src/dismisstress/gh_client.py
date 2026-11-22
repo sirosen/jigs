@@ -105,7 +105,7 @@ class GithubClient:
 
     async def get_dependabot_alerts(
         self, repo: str, state: str = "open", per_page: int = 100
-    ) -> t.Any:
+    ) -> APIResponse:
         return await self.get(
             f"/repos/{repo}/dependabot/alerts", state=state, per_page=per_page
         )
