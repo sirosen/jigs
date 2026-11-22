@@ -1,12 +1,13 @@
 """A GitHub API client."""
 import os
 import subprocess
-import threading
 import typing as t
 
-import requests
+import aiohttp
 
-from .data_models import GHNotification
+from .data_models import APIResponse, GHNotification
+
+T = t.TypeVar("T")
 
 
 def _load_token() -> str:
@@ -17,70 +18,88 @@ def _load_token() -> str:
     )
 
 
+def _new_session(token: str) -> aiohttp.ClientSession:
+    return aiohttp.ClientSession(
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+    )
+
+
+async def _parse_api_response(response: aiohttp.ClientResponse) -> APIResponse:
+    response.raise_for_status()
+    data = await response.json()
+    if next_link_header := response.links.get("next"):
+        next_link = str(next_link_header.get("url"))
+    else:
+        next_link = None
+    return APIResponse(data, next_link)
+
+
 class GithubClient:
     """
-    Thread-safe client: one connection per thread.
+    GitHub Client class.
 
-    Automatically handles authentication on init.
+    Automatically handles authentication synchronously on init.
     """
 
     API = "https://api.github.com"
 
     def __init__(self) -> None:
         self._token = _load_token()
-        self._local = threading.local()
+        self._session = _new_session(self._token)
 
-    def _session(self) -> requests.Session:
-        if not hasattr(self._local, "session"):
-            session = requests.Session()
-            session.headers.update(
-                {
-                    "Authorization": f"Bearer {self._token}",
-                    "Accept": "application/vnd.github+json",
-                    "X-GitHub-Api-Version": "2022-11-28",
-                }
-            )
-            self._local.session = session
-        return self._local.session  # type: ignore[return-value]
+    async def close(self) -> None:
+        await self._session.close()
 
-    def request(self, verb: str, url: str, **params: t.Any) -> requests.Response:
+    async def request(
+        self, verb: str, url: str, **params: t.Any
+    ) -> APIResponse:
         if url.startswith("/"):
             url = self.API + url
-        response = self._session().request(verb, url, params=params, timeout=30)
-        response.raise_for_status()
-        return response
+        async with self._session.request(
+            verb, url, params=params, timeout=aiohttp.ClientTimeout(30)
+        ) as response:
+            return await _parse_api_response(response)
 
-    def get(self, url: str, **params: t.Any) -> t.Any:
-        return self.request("GET", url, **params).json()
+    async def get(self, url: str, **params: t.Any) -> APIResponse:
+        return await self.request("GET", url, **params)
 
-    def delete(self, url: str, **params: t.Any) -> t.Any:
-        return self.request("DELETE", url, **params).json()
+    async def delete(self, url: str, **params: t.Any) -> APIResponse:
+        return await self.request("DELETE", url, **params)
 
-    def paginated_get(
+    async def paginated_get(
         self, url: str, per_page: int = 100, **params: t.Any
-    ) -> t.Iterator[list[t.Any]]:
+    ) -> t.AsyncIterator[APIResponse]:
         """
         GET every page, following Link headers.
+        Does not return/yield said link headers.
 
         Assumes that the underlying data is a list by type (but doesn't check).
         """
-        response = self.request("GET", url, per_page=per_page, **params)
-        yield response.json()
-        while "next" in response.links:
-            response = self.request("GET", response.links["next"]["url"])
-            yield response.json()
+        response = await self.get(url, per_page=per_page, **params)
+        yield response
+        while response.next_link:
+            response = await self.get(response.next_link)
+            yield response
 
-    def list_notifications(self) -> list[GHNotification]:
+    async def list_notifications(self) -> list[GHNotification]:
         # is_done=false matches the web inbox (read and unread, not done)
-        pages = list(self.paginated_get("/notifications", all="true", is_done="false"))
-        return [GHNotification.from_json(item) for page in pages for item in page]
+        results = []
+        async for page in self.paginated_get(
+            "/notifications", all="true", is_done="false"
+        ):
+            results.extend([GHNotification.from_json(item) for item in page.json_body])
+        return results
 
-    def get_dependabot_alerts(
+    async def get_dependabot_alerts(
         self, repo: str, state: str = "open", per_page: int = 100
     ) -> t.Any:
-        return self.get(
+        return await self.get(
             f"/repos/{repo}/dependabot/alerts", state=state, per_page=per_page
         )
 
-    def clear_notification(self, notification: GHNotification) -> None:
-        self.delete(notification.url)
+    async def clear_notification(self, notification: GHNotification) -> None:
+        await self.delete(notification.url)

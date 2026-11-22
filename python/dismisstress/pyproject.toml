@@ -2,8 +2,8 @@
 name = "dismisstress"
 version = "0.1.1"
 description = "TUI manager for GitHub notifications"
-requires-python = ">=3.10"
-dependencies = ["requests", "textual"]
+requires-python = ">=3.11"
+dependencies = ["aiohttp>=3,<4", "textual"]
 readme = "README.md"
 
 [project.scripts]
@@ -27,7 +27,7 @@ exclude = ["uv.lock"]
 # -- hatch envs
 
 [tool.hatch.envs.mypy]
-dependencies = ["mypy", "types-requests"]
+dependencies = ["mypy"]
 [tool.hatch.envs.mypy.scripts]
 main = "mypy {args}"
 

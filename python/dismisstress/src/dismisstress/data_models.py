@@ -22,6 +22,14 @@ class CliArgs:
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
+class APIResponse:
+    # we don't know the type in the general case -- could be a dict or a list
+    # at the very least
+    json_body: t.Any
+    next_link: str | None
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
 class GHSubject:
     title: str
     type: str
@@ -40,7 +48,7 @@ class GHNotification:  # the fields we use from GET /notifications
 
     @property
     def is_security_alert(self) -> bool:
-        return self.notification.reason == "security_alert"
+        return bool(self.reason == "security_alert")
 
     @classmethod
     def from_json(cls, data: dict[str, t.Any]) -> GHNotification:
@@ -60,3 +68,7 @@ class Row:
     notification: GHNotification
     status: str
     url: str
+
+    @property
+    def is_security_alert(self) -> bool:
+        return self.notification.is_security_alert

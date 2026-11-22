@@ -1,4 +1,5 @@
 import argparse
+import asyncio
 
 from .app import Dismisstress
 from .data_models import CliArgs
@@ -21,9 +22,14 @@ def parse_args() -> CliArgs:
 
 
 def main() -> None:
+    asyncio.run(_app())
+
+
+async def _app() -> None:
     args = parse_args()
     client = GithubClient()
-    Dismisstress(args, client).run()
+    await Dismisstress(args, client).run_async()
+    await client.close()
 
 
 if __name__ == "__main__":

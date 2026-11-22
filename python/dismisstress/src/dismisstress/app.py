@@ -1,10 +1,8 @@
-import functools
+import asyncio
 import math
-import time
 import typing as t
-from concurrent.futures import ThreadPoolExecutor
 
-import requests
+import aiohttp
 from rich.console import Group, RenderableType
 from rich.padding import Padding
 from rich.text import Text
@@ -19,11 +17,11 @@ from .data_models import CliArgs, Filter, GHNotification, Row
 from .gh_client import GithubClient
 
 
-def render_request_error(e: requests.RequestException) -> str:
+def render_http_error(e: aiohttp.ClientResponseError) -> str:
     return str(e.response.status_code) if e.response is not None else type(e).__name__
 
 
-def notification2row(gh: GithubClient, notification: GHNotification) -> Row:
+async def notification2row(gh: GithubClient, notification: GHNotification) -> Row:
     repo = notification.repo
     url = notification.subject.url
     dependabot_uri = f"https://github.com/{repo}/security/dependabot"
@@ -35,17 +33,19 @@ def notification2row(gh: GithubClient, notification: GHNotification) -> Row:
         return Row(notification, "?", "")
     if not url:
         try:
-            alerts = gh.get(
-                f"/repos/{repo}/dependabot/alerts", state="open", per_page=100
-            )
-        except requests.RequestException:
+            alerts = (
+                await gh.get(
+                    f"/repos/{repo}/dependabot/alerts", state="open", per_page=100
+                )
+            ).json_body
+        except aiohttp.ClientResponseError:
             return Row(notification, "?", dependabot_uri)
         state = f"{len(alerts)}{'+' if len(alerts) == 100 else ''} open"
         return Row(notification, state, dependabot_uri)
 
     try:
-        data = gh.get(url)
-    except requests.RequestException:
+        data = (await gh.get(url)).json_body
+    except aiohttp.ClientResponseError:
         return Row(notification, "?", "")
 
     if isinstance(data, list):  # grouped subject, e.g. a thread of Dependabot alerts
@@ -69,30 +69,30 @@ def notification2row(gh: GithubClient, notification: GHNotification) -> Row:
     )
 
 
-def latest_comment(gh: GithubClient, notification: GHNotification) -> str:
+async def latest_comment(gh: GithubClient, notification: GHNotification) -> str:
     if not (url := notification.subject.latest_comment_url):
         return "(no comments)"
     try:
-        comment = gh.get(url)
-    except requests.RequestException as e:
-        return f"(error: {render_request_error(e)})"
+        comment = (await gh.get(url)).json_body
+    except aiohttp.ClientResponseError as e:
+        return f"(error: {render_http_error(e)})"
     user = (comment.get("user") or comment.get("author") or {}).get("login", "?")
     return f"{user}:\n\n{comment.get('body') or ''}"
 
 
-def renderable_comment_thread(
+async def renderable_comment_thread(
     gh: GithubClient, notification: GHNotification
 ) -> RenderableType:
     """Opening post plus the newest 100 main-thread comments, oldest first."""
     url = notification.subject.url
     if notification.subject.type not in ("Issue", "PullRequest") or not url:
-        return Text(latest_comment(gh, notification))
+        return Text(await latest_comment(gh, notification))
 
     try:
-        subject_info = gh.get(url)
-    except requests.RequestException as e:
+        subject_info = (await gh.get(url)).json_body
+    except aiohttp.ClientResponseError as e:
         return Text(
-            f"(error on notification metadata lookup: {render_request_error(e)})"
+            f"(error on notification metadata lookup: {render_http_error(e)})"
         )
 
     num_comments = subject_info.get("comments", 0)
@@ -104,11 +104,11 @@ def renderable_comment_thread(
     try:
         for page in (last_page_index - 1, last_page_index):
             if page > 0:
-                comments += gh.get(
-                    subject_info["comments_url"], per_page=100, page=page
-                )
-    except requests.RequestException as e:
-        return Text(f"(error fetching comments: {render_request_error(e)})")
+                comments += (
+                    await gh.get(subject_info["comments_url"], per_page=100, page=page)
+                ).json_body
+    except aiohttp.ClientResponseError as e:
+        return Text(f"(error fetching comments: {render_http_error(e)})")
     comments = comments[-100:]
 
     # start with the initial comment and optionally a spacer for hidden old comments
@@ -225,25 +225,19 @@ class Dismisstress(App[None]):
             )
         self.sub_title = f"{table.row_count} shown, {len(self.selected)} selected{sort}"
 
-    @work(thread=True, exclusive=True, group="load")
-    def action_refresh(self) -> None:
-        self.call_from_thread(setattr, self, "sub_title", "loading...")
-        notifications = self.client.list_notifications()
+    @work(exclusive=True, group="load")
+    async def action_refresh(self) -> None:
+        self.sub_title = "loading..."
+        notifications = await self.client.list_notifications()
         if self.owners:
             notifications = [n for n in notifications if owner(n) in self.owners]
-        with ThreadPoolExecutor(min(16, len(notifications) // 2) or 1) as ex:
-            rows = list(
-                ex.map(
-                    functools.partial(notification2row, self.client),
-                    notifications,
-                )
-            )
-        self.call_from_thread(self.loaded, {row.notification.id: row for row in rows})
+        rows = await asyncio.gather(
+            *(notification2row(self.client, n) for n in notifications)
+        )
 
-    def loaded(self, rows: dict[str, Row]) -> None:
-        self.rows = rows
+        self.rows = {row.notification.id: row for row in rows}
         self.comments = {}
-        self.selected &= rows.keys()
+        self.selected &= self.rows.keys()
         self.render_table()
 
     def on_data_table_header_selected(self, event: DataTable.HeaderSelected) -> None:
@@ -259,11 +253,13 @@ class Dismisstress(App[None]):
         if event.row_key.value is not None:
             self.show(event.row_key.value)
 
-    @work(thread=True, exclusive=True, group="detail")
-    def show(self, id: str) -> None:
+    @work(exclusive=True, group="detail")
+    async def show(self, id: str) -> None:
         row = self.rows[id]
         if id not in self.comments:
-            self.comments[id] = renderable_comment_thread(self.client, row.notification)
+            self.comments[id] = await renderable_comment_thread(
+                self.client, row.notification
+            )
         header = Text(
             (
                 f"{row.notification.subject.title}\n"
@@ -272,9 +268,7 @@ class Dismisstress(App[None]):
             "bold",
         )
         if self.current() == id:
-            self.call_from_thread(
-                self.show_detail, row.url, Group(header, self.comments[id])
-            )
+            self.show_detail(row.url, Group(header, self.comments[id]))
 
     def show_detail(self, url: str, text: RenderableType) -> None:
         link = self.query_one(Link)
@@ -300,34 +294,32 @@ class Dismisstress(App[None]):
             self.repo = self.rows[id].notification.repo
         self.render_table()
 
-    def action_dismiss(self) -> None:
+    async def action_dismiss(self) -> None:
         ids = set(self.selected) or {id for id in [self.current()] if id is not None}
         if ids:
             self.dismiss(ids)
 
-    @work(thread=True, group="dismiss")
-    def dismiss(self, ids: set[str]) -> None:
+    @work(group="dismiss")
+    async def dismiss(self, ids: set[str]) -> None:
         done = set()
         for i, id in enumerate(ids, 1):
-            self.call_from_thread(self.set_status, f"dismissing {i}/{len(ids)}...")
+            self.set_status(f"dismissing {i}/{len(ids)}...")
             if i > 1:
-                time.sleep(1)  # GitHub asks for >=1s between mutating requests
+                await asyncio.sleep(1)  # GitHub asks for >=1s between mutating requests
             try:
-                self.client.clear_notification(self.rows[id].notification)
+                await self.client.clear_notification(self.rows[id].notification)
                 done.add(id)
-            except requests.RequestException as e:
-                self.call_from_thread(
-                    self.notify,
-                    f"dismiss failed: {render_request_error(e)}",
-                    severity="error",
+            except aiohttp.ClientResponseError as e:
+                self.notify(
+                    f"dismiss failed: {render_http_error(e)}", severity="error"
                 )
-        self.call_from_thread(self.set_status, f"dismissed {len(done)}/{len(ids)}")
-        self.call_from_thread(self.dismissed, done)
+        self.set_status(f"dismissed {len(done)}/{len(ids)}")
+        self.mark_dismissed(done)
 
     def set_status(self, text: str) -> None:
         self.query_one("#status", Static).update(text)
 
-    def dismissed(self, ids: set[str]) -> None:
+    def mark_dismissed(self, ids: set[str]) -> None:
         for id in ids:
             self.rows.pop(id, None)
         self.selected -= ids
