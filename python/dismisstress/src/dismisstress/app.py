@@ -144,7 +144,7 @@ def matches_filter(filter: Filter, row: Row, repo: str | None) -> bool:
 
 class Dismisstress(App[None]):
     CSS = (
-        "DataTable { height: 2fr; } VerticalScroll { height: 1fr; border: solid gray; }"
+        "DataTable { height: 1fr; } VerticalScroll { height: 1fr; border: solid gray; }"
     )
     BINDINGS: t.ClassVar[list[BindingType]] = [
         ("space,x", "select", "Select"),
