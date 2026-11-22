@@ -28,8 +28,10 @@ def main() -> None:
 async def _app() -> None:
     args = parse_args()
     client = GithubClient()
-    await Dismisstress(args, client).run_async()
-    await client.close()
+    try:
+        await Dismisstress(args, client).run_async()
+    finally:
+        await client.close()
 
 
 if __name__ == "__main__":

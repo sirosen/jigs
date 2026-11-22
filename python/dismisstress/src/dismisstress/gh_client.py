@@ -24,13 +24,22 @@ def _new_session(token: str) -> aiohttp.ClientSession:
             "Authorization": f"Bearer {token}",
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
-        }
+        },
+        # The "connector" controls the session's connection pooling, so a modest pool
+        # size limits how hard we hit the GitHub API and avoids rate limiting.
+        # The documented limit for concurrent requests is 100. see:
+        #   https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api
+        connector=aiohttp.TCPConnector(limit=64),
     )
 
 
 async def _parse_api_response(response: aiohttp.ClientResponse) -> APIResponse:
     response.raise_for_status()
-    data = await response.json()
+    try:
+        data = await response.json(encoding="utf-8")
+    except aiohttp.ClientResponseError:
+        data = None
+
     if next_link_header := response.links.get("next"):
         next_link = str(next_link_header.get("url"))
     else:
