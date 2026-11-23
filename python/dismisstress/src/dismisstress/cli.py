@@ -1,3 +1,4 @@
+import importlib.metadata
 import argparse
 import asyncio
 import typing as t
@@ -25,6 +26,12 @@ def parse_args() -> CliArgs:
         help="only show these owners (comma-separated, or may be used multiple times)",
         action="append",
         default=[],
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"dismisstress {importlib.metadata.version("dismisstress")}",
+        help="show version and exit",
     )
     args = parser.parse_args()
     owners = set(_split_owners(args.owners))
