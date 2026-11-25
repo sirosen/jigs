@@ -148,12 +148,12 @@ class GithubClient:
             self.get_all(f"{pull_url}/reviews"), self.get_all(f"{pull_url}/comments")
         )
         # replies all point at the first comment of their thread
-        comment_chains = {}
+        comment_chains: dict[int, list[GHReviewComment]] = {}
         for c in comments:
             gh_comment = GHReviewComment.from_json(c)
             comment_chains.setdefault(gh_comment.thread_key, []).append(gh_comment)
 
-        threads = {}
+        threads: dict[int | None, list[GHReviewThread]] = {}
         for chain in comment_chains.values():
             threads.setdefault(chain[0].review_id, []).append(
                 GHReviewThread.from_review_comments(chain)
