@@ -3,6 +3,7 @@ Models for internal and external datatypes.
 
 Covers GitHub API data, user input data, and internal state.
 """
+
 from __future__ import annotations
 
 import dataclasses
@@ -67,44 +68,101 @@ class GHNotification:  # the fields we use from GET /notifications
         )
 
 
-# a comment as modeled for passing into presentation
-# does not necessarily correspond with any GitHub APIs
 @dataclasses.dataclass(frozen=True, slots=True)
-class Comment:
+class GHComment:
     user: str
     created_at: str | None
-    body: None
+    body: str
 
     @classmethod
-    def from_json(cls, data: dict[str, t.Any]) -> t.Self:
+    def from_json(cls, data: dict[str, t.Any]) -> GHComment:
+        return cls(_login(data), data.get("created_at"), data.get("body") or "")
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class GHCommentThread:
+    opening: GHComment
+    # comments may be truncated for long threads
+    comments: tuple[GHComment, ...]
+    total: int
+
+    @property
+    def num_hidden(self) -> int:
+        return self.total - len(self.comments)
+
+    @classmethod
+    def from_json(
+        cls, issue: dict[str, t.Any], comments: list[dict[str, t.Any]]
+    ) -> GHCommentThread:
         return cls(
-            user=cls._get_username(data),
-            created_at=data.get("created_at"),
-            body=data.get("body", ""),
+            opening=GHComment.from_json(issue),
+            comments=tuple(GHComment.from_json(c) for c in comments),
+            total=issue.get("comments", 0),
         )
 
-    @classmethod
-    def _get_username(cls, data: dict[str, t.Any]) -> str:
-        user = data.get("user", {})
-        if user is None:
-            return "<ghost>"
-        return user.get("login", "<ghost>")  # type: ignore[no-any-return]
 
-
-# the first comment (as in a PR or Issue)
 @dataclasses.dataclass(frozen=True, slots=True)
-class ThreadStartComment(Comment):
-    num_comments: int
-    comments_url: str
+class GHReviewComment:  # a comment on a line in a PR file
+    id: int
+    review_id: int | None
+    in_reply_to_id: int | None
+    path: str
+    line: int | None
+    comment: GHComment
+
+    @property
+    def thread_key(self) -> int:
+        if self.in_reply_to_id is not None:
+            return self.in_reply_to_id
+        return self.id
 
     @classmethod
-    def from_json(cls, data: dict[str, t.Any]) -> t.Self:
+    def from_json(cls, data: dict[str, t.Any]) -> GHReviewComment:
         return cls(
-            user=cls._get_username(data),
-            created_at=data.get("created_at"),
-            body=data.get("body", ""),
-            num_comments=data.get("comments", 0),
-            comments_url=data["comments_url"],
+            id=data["id"],
+            review_id=data.get("pull_request_review_id"),
+            in_reply_to_id=data.get("in_reply_to_id"),
+            path=data["path"],
+            line=data.get("line") or data.get("original_line"),
+            comment=GHComment.from_json(data),
+        )
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class GHReviewThread:  # a review comment plus its replies
+    path: str
+    line: int | None
+    comments: tuple[GHComment, ...]
+
+    @classmethod
+    def from_review_comments(cls, chain: list[GHReviewComment]) -> GHReviewThread:
+        return cls(chain[0].path, chain[0].line, tuple(c.comment for c in chain))
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class GHReview:
+    state: str
+    user: str
+    submitted_at: str | None
+    body: str
+    threads: tuple[GHReviewThread, ...]  # the threads this review started
+
+    @property
+    def is_empty(self) -> bool:
+        # a review which replies to prior reviews but doesn't have a top-level body
+        # and doesn't start new threads is "empty"
+        return self.state == "COMMENTED" and not self.body and not self.threads
+
+    @classmethod
+    def from_json(
+        cls, data: dict[str, t.Any], threads: tuple[GHReviewThread, ...]
+    ) -> GHReview:
+        return cls(
+            state=data["state"],
+            user=_login(data),
+            submitted_at=data.get("submitted_at"),
+            body=data.get("body") or "",
+            threads=threads,
         )
 
 
@@ -124,3 +182,8 @@ class Row:
             and (Filter.SECURITY not in filter or self.is_security_alert)
             and (Filter.REPO not in filter or self.notification.repo == repo)
         )
+
+
+def _login(data: dict[str, t.Any]) -> str:
+    user = data.get("user") or data.get("author") or {}
+    return str(user.get("login", "<ghost>"))

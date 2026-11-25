@@ -1,11 +1,22 @@
 """A GitHub API client."""
+
+import asyncio
+import math
 import os
 import subprocess
 import typing as t
 
 import aiohttp
 
-from .data_models import APIResponse, GHNotification
+from .data_models import (
+    APIResponse,
+    GHComment,
+    GHCommentThread,
+    GHNotification,
+    GHReview,
+    GHReviewComment,
+    GHReviewThread,
+)
 
 T = t.TypeVar("T")
 
@@ -63,9 +74,7 @@ class GithubClient:
     async def close(self) -> None:
         await self._session.close()
 
-    async def request(
-        self, verb: str, url: str, **params: t.Any
-    ) -> APIResponse:
+    async def request(self, verb: str, url: str, **params: t.Any) -> APIResponse:
         if url.startswith("/"):
             url = self.API + url
         async with self._session.request(
@@ -94,6 +103,13 @@ class GithubClient:
             response = await self.get(response.next_link)
             yield response
 
+    async def get_all(self, url: str, **params: t.Any) -> list[t.Any]:
+        return [
+            x
+            async for page in self.paginated_get(url, **params)
+            for x in page.json_body
+        ]
+
     async def list_notifications(self) -> list[GHNotification]:
         # is_done=false matches the web inbox (read and unread, not done)
         results = []
@@ -109,6 +125,41 @@ class GithubClient:
         return await self.get(
             f"/repos/{repo}/dependabot/alerts", state=state, per_page=per_page
         )
+
+    async def get_comment(self, url: str) -> GHComment:
+        return GHComment.from_json((await self.get(url)).json_body)
+
+    async def get_comment_thread(self, url: str) -> GHCommentThread:
+        """An issue or PR's opening post plus its newest 100 comments, oldest first."""
+        issue = (await self.get(url)).json_body
+        last_page = math.ceil(issue.get("comments", 0) / 100)
+        comments = []
+        for page in (last_page - 1, last_page):  # the newest 100 span <=2 pages
+            if page > 0:
+                response = await self.get(
+                    issue["comments_url"], per_page=100, page=page
+                )
+                comments.extend(response.json_body)
+        return GHCommentThread.from_json(issue, comments[-100:])
+
+    async def get_reviews(self, pull_url: str) -> list[GHReview]:
+        """A PR's reviews, oldest first, each with the line comment threads it began."""
+        reviews, comments = await asyncio.gather(
+            self.get_all(f"{pull_url}/reviews"), self.get_all(f"{pull_url}/comments")
+        )
+        # replies all point at the first comment of their thread
+        comment_chains = {}
+        for c in comments:
+            gh_comment = GHReviewComment.from_json(c)
+            comment_chains.setdefault(gh_comment.thread_key, []).append(gh_comment)
+
+        threads = {}
+        for chain in comment_chains.values():
+            threads.setdefault(chain[0].review_id, []).append(
+                GHReviewThread.from_review_comments(chain)
+            )
+
+        return [GHReview.from_json(r, tuple(threads.get(r["id"], []))) for r in reviews]
 
     async def clear_notification(self, notification: GHNotification) -> None:
         await self.delete(notification.url)

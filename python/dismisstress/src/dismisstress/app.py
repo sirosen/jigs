@@ -1,10 +1,8 @@
 import asyncio
-import math
 import typing as t
 
 import aiohttp
 from rich.console import Group, RenderableType
-from rich.padding import Padding
 from rich.text import Text
 from textual import work
 from textual.app import App, ComposeResult
@@ -13,138 +11,24 @@ from textual.containers import VerticalScroll
 from textual.widgets import DataTable, Footer, Header, Link, Static
 from textual.widgets.data_table import ColumnKey
 
-from .data_models import (
-    CliArgs,
-    Comment,
-    Filter,
-    GHNotification,
-    Row,
-    ThreadStartComment,
-)
+from .data_models import CliArgs, Filter, GHNotification, Row
+from .formatters import format_comment_thread, format_review_list
 from .gh_client import GithubClient
 
 
-async def notification2row(gh: GithubClient, notification: GHNotification) -> Row:
-    repo = notification.repo
-    url = notification.subject.url
-    dependabot_uri = f"https://github.com/{repo}/security/dependabot"
-    ghsa_uri = f"https://github.com/{repo}/security/advisories"
-
-    if notification.subject.type == "RepositoryAdvisory":
-        return Row(notification, "-", ghsa_uri)
-    if not url and not notification.is_security_alert:
-        return Row(notification, "?", "")
-    if not url:
-        try:
-            alerts = (await gh.get_dependabot_alerts(repo)).json_body
-        except aiohttp.ClientResponseError:
-            return Row(notification, "?", dependabot_uri)
-        state = f"{len(alerts)}{'+' if len(alerts) == 100 else ''} open"
-        return Row(notification, state, dependabot_uri)
-
-    try:
-        data = (await gh.get(url)).json_body
-    except aiohttp.ClientResponseError:
-        return Row(notification, "?", "")
-
-    if isinstance(data, list):  # grouped subject, e.g. a thread of Dependabot alerts
-        state = (
-            ", ".join(
-                sorted({x.get("state", "?") for x in data if isinstance(x, dict)})
-            )
-            or "-"
-        )
-        return Row(
-            notification,
-            state,
-            dependabot_uri
-            if notification.is_security_alert
-            else f"https://github.com/{repo}",
-        )
-    return Row(
-        notification,
-        ("merged" if data.get("merged") else data.get("state", "-")),
-        data.get("html_url", ""),
-    )
-
-
-async def latest_comment(gh: GithubClient, notification: GHNotification) -> str:
-    if not (url := notification.subject.latest_comment_url):
-        return "(no comments)"
-    try:
-        comment = (await gh.get(url)).json_body
-    except aiohttp.ClientResponseError as e:
-        return f"(error: {e})"
-    user = (comment.get("user") or comment.get("author") or {}).get("login", "?")
-    return f"{user}:\n\n{comment.get('body') or ''}"
-
-
-async def renderable_comment_thread(
-    gh: GithubClient, notification: GHNotification
-) -> RenderableType:
-    """Opening post plus the newest 100 main-thread comments, oldest first."""
-    url = notification.subject.url
-    if not url:
-        return Text("(no comments)")
-    if notification.subject.type == "Discussion":
-        return Text("(... TODO: no support yet for discussion threads ...)")
-    elif notification.subject.type not in ("Issue", "PullRequest"):
-        return Text(await latest_comment(gh, notification))
-
-    try:
-        start_comment = ThreadStartComment.from_json((await gh.get(url)).json_body)
-    except aiohttp.ClientResponseError as e:
-        return Text(f"(error on notification metadata lookup: {e})")
-
-    try:
-        comments = await _last_100_comments(gh, start_comment)
-    except aiohttp.ClientResponseError as e:
-        return Text(f"(error fetching comments: {e})")
-
-    # start with the initial comment and optionally a spacer for hidden old comments
-    parts: list[RenderableType] = _format_comment(start_comment)
-    if (hidden := (start_comment.num_comments - len(comments))) > 0:
-        parts.append(Text(f"...{hidden} older comments not shown...\n", "dim"))
-
-    for comment in comments:
-        parts.extend(_format_comment(comment))
-
-    return Group(*parts)
-
-
-async def _last_100_comments(
-    gh: GithubClient, start_comment: ThreadStartComment
-) -> list[Comment]:
-    comments: list[Comment] = []
-    last_page_index = math.ceil(start_comment.num_comments / 100)
-
-    # get the last two pages of comments, then trim down to 100
-    # most typically, there are fewer than 100 comments, so this is *usually* one call
-    for page in (last_page_index - 1, last_page_index):
-        if page > 0:
-            comments.extend(
-                Comment.from_json(c)
-                for c in (
-                    await gh.get(
-                        start_comment.comments_url, per_page=100, page=page
-                    )
-                ).json_body
-            )
-
-    return comments[-100:]
-
-
-def _format_comment(post: Comment) -> list[RenderableType]:
-    return [
-        Text(f"── {post.user} · {post.created_at}", "bold"),
-        Padding(Text(post.body or ""), (0, 0, 1, 2)),
-    ]
-
-
 class Dismisstress(App[None]):
-    CSS = (
-        "DataTable { height: 1fr; } VerticalScroll { height: 1fr; border: solid gray; }"
-    )
+    CSS = """
+    DataTable {
+        height: 1fr;
+    }
+    VerticalScroll {
+        height: 1fr;
+        border: solid gray;
+    }
+    VerticalScroll:focus {
+        border: solid $accent;
+    }
+    """
     BINDINGS: t.ClassVar[list[BindingType]] = [
         ("space,x", "select", "Select"),
         ("m", "filter('MERGED')", "Merged only"),
@@ -165,6 +49,7 @@ class Dismisstress(App[None]):
         self.owners = args.owners
         self.rows: dict[str, Row] = {}
         self.comments: dict[str, RenderableType] = {}
+        self.reviews: dict[str, RenderableType | None] = {}
         self.selected: set[str] = set()
         self.filter = Filter(0)
         self.repo: str | None = None
@@ -174,8 +59,12 @@ class Dismisstress(App[None]):
         yield Header()
         yield DataTable(cursor_type="row")
         yield Link("", id="link")
-        with VerticalScroll():
+        with VerticalScroll() as main_comment_thread:
+            main_comment_thread.border_title = "Comments"
             yield Static(id="detail")
+        with VerticalScroll(id="reviews-pane") as reviews:
+            reviews.border_title = "Reviews"
+            yield Static(id="reviews")
         yield Static(id="status")
         yield Footer()
 
@@ -236,6 +125,7 @@ class Dismisstress(App[None]):
 
         self.rows = {row.notification.id: row for row in rows}
         self.comments = {}
+        self.reviews = {}
         self.selected &= self.rows.keys()
         self.render_table()
 
@@ -256,8 +146,9 @@ class Dismisstress(App[None]):
     async def show(self, id: str) -> None:
         row = self.rows[id]
         if id not in self.comments:
-            self.comments[id] = await renderable_comment_thread(
-                self.client, row.notification
+            self.comments[id], self.reviews[id] = await asyncio.gather(
+                renderable_comment_thread(self.client, row.notification),
+                renderable_reviews(self.client, row.notification),
             )
         header = Text(
             (
@@ -267,15 +158,20 @@ class Dismisstress(App[None]):
             "bold",
         )
         if self.current() == id:
-            self.show_detail(row.url, Group(header, self.comments[id]))
+            self.show_detail(
+                row.url, Group(header, self.comments[id]), self.reviews[id]
+            )
 
-    def show_detail(self, url: str, text: RenderableType) -> None:
+    def show_detail(
+        self, url: str, text: RenderableType, reviews: RenderableType | None = None
+    ) -> None:
         link = self.query_one(Link)
         link.text = link.url = url
         self.query_one("#detail", Static).update(text)
-        self.call_after_refresh(
-            self.query_one(VerticalScroll).scroll_end, animate=False
-        )
+        self.query_one("#reviews", Static).update(reviews or "")
+        self.query_one("#reviews-pane").display = reviews is not None
+        for pane in self.query(VerticalScroll):
+            self.call_after_refresh(pane.scroll_end, animate=False)
 
     def action_select(self) -> None:
         if (id := self.current()) is None:
@@ -321,3 +217,92 @@ class Dismisstress(App[None]):
             self.rows.pop(id, None)
         self.selected -= ids
         self.render_table()
+
+
+async def notification2row(gh: GithubClient, notification: GHNotification) -> Row:
+    repo = notification.repo
+    url = notification.subject.url
+    dependabot_uri = f"https://github.com/{repo}/security/dependabot"
+    ghsa_uri = f"https://github.com/{repo}/security/advisories"
+
+    if notification.subject.type == "RepositoryAdvisory":
+        return Row(notification, "-", ghsa_uri)
+    if not url and not notification.is_security_alert:
+        return Row(notification, "?", "")
+    if not url:
+        try:
+            alerts = (await gh.get_dependabot_alerts(repo)).json_body
+        except aiohttp.ClientResponseError:
+            return Row(notification, "?", dependabot_uri)
+        state = f"{len(alerts)}{'+' if len(alerts) == 100 else ''} open"
+        return Row(notification, state, dependabot_uri)
+
+    try:
+        data = (await gh.get(url)).json_body
+    except aiohttp.ClientResponseError:
+        return Row(notification, "?", "")
+
+    if isinstance(data, list):  # grouped subject, e.g. a thread of Dependabot alerts
+        state = (
+            ", ".join(
+                sorted({x.get("state", "?") for x in data if isinstance(x, dict)})
+            )
+            or "-"
+        )
+        return Row(
+            notification,
+            state,
+            dependabot_uri
+            if notification.is_security_alert
+            else f"https://github.com/{repo}",
+        )
+    return Row(
+        notification,
+        ("merged" if data.get("merged") else data.get("state", "-")),
+        data.get("html_url", ""),
+    )
+
+
+async def latest_comment(gh: GithubClient, notification: GHNotification) -> str:
+    if not (url := notification.subject.latest_comment_url):
+        return "(no comments)"
+    try:
+        comment = await gh.get_comment(url)
+    except aiohttp.ClientResponseError as e:
+        return f"(error: {e})"
+    return f"{comment.user}:\n\n{comment.body}"
+
+
+async def renderable_comment_thread(
+    gh: GithubClient, notification: GHNotification
+) -> RenderableType:
+    """Opening post plus the newest 100 main-thread comments, oldest first."""
+    url = notification.subject.url
+    if not url:
+        return Text("(no comments)")
+    if notification.subject.type == "Discussion":
+        return Text("(... TODO: no support yet for discussion threads ...)")
+    elif notification.subject.type not in ("Issue", "PullRequest"):
+        return Text(await latest_comment(gh, notification))
+
+    try:
+        thread = await gh.get_comment_thread(url)
+    except aiohttp.ClientResponseError as e:
+        return Text(f"(error fetching comments: {e})")
+
+    return format_comment_thread(thread)
+
+
+async def renderable_reviews(
+    gh: GithubClient, notification: GHNotification
+) -> RenderableType | None:
+    """PR reviews, oldest first, each with its inline threads. None if no reviews."""
+    url = notification.subject.url
+    if notification.subject.type != "PullRequest" or not url:
+        return None
+    try:
+        reviews = await gh.get_reviews(url)
+    except aiohttp.ClientResponseError as e:
+        return Text(f"(error fetching reviews: {e})")
+
+    return format_review_list(reviews)
